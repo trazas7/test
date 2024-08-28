@@ -1,5 +1,5 @@
 import json
-import os
+import os.path
 import sys
 from zipfile import ZipFile
 import requests
@@ -8,6 +8,7 @@ from requests.auth import HTTPBasicAuth
 headers = {}
 client_id = 'WAfmUZHwqyvWSiJjQ5AVq14b4i2nBNDX'
 client_secret = 'HimoDXpw5Oiqsrch'
+response = ""
 
 def update_request_header_with_new_token():
     global headers
@@ -18,64 +19,50 @@ def update_request_header_with_new_token():
                                    headers=headers_token, 
                                    params=params, 
                                    verify=False)
-    
-    if token_response.status_code != 200:
-        print(f"Failed to obtain token. Status code: {token_response.status_code}")
-        print(f"Response content: {token_response.content}")
-        raise Exception("Failed to obtain access token")
-
-    try:
-        response_data = json.loads(token_response.content)
-        bearer_token = response_data["access_token"]
-        headers = {"Authorization": f"Bearer {bearer_token}"}
-        print("Token updated successfully.")
-    except KeyError as e:
-        print(f"KeyError: {str(e)}")
-        print(f"Response content: {response_data}")
-        raise Exception("Failed to extract access token from response")
-    except json.JSONDecodeError:
-        print(f"Failed to decode JSON. Response content: {token_response.content}")
-        raise Exception("Failed to decode JSON response")
+    print(json.loads(token_response.content)["access_token"])
+    bearer_token = json.loads(token_response.content)["access_token"]
+    headers = {"Authorization": f"Bearer {bearer_token}"}
 
 def download_and_extract_publication(research_id):
     status = True
     while status:
-        try:
-            # download zip
-            response = requests.get(
-                f"https://api-staging.staging.echonet/gm-gm-research-content-internet/v1/documents/{research_id}",
-                headers=headers,
-                verify=False
-            )
-            response.raise_for_status()  # Raises an HTTPError for bad responses
-            status = False
-        except requests.exceptions.RequestException as e:
-            print(f"Failed to download {research_id}. Error: {str(e)}")
-            print("Updating token and retrying...")
+        # download zip
+        response = requests.get(
+            f"https://api-staging.staging.echonet/gm-gm-research-content-internet/v1/documents/{research_id}",
+            headers=headers,
+            verify=False
+        )
+        # if request fails retry with new bearer token
+        if response.status_code != 200:
             update_request_header_with_new_token()
-    
-    # Create data directory if it doesn't exist
-    os.makedirs("data", exist_ok=True)
-    
+        else:
+            status = False
+
     # save zip
     with open(f"data/{research_id}.zip", mode="wb") as file:
         file.write(response.content)
-    
+
     # extract
-    with ZipFile(f"data/{research_id}.zip", 'r') as zObject:
+    with ZipFile(f"data\\{research_id}.zip", 'r') as zObject:
         # Extracting all the members of the zip into a specific location.
-        zObject.extractall(path=f"data/{research_id}")
-    
-    print(f"Successfully downloaded and extracted {research_id}")
+        zObject.extractall(path="data")
+
+    # rename rixml file
+    os.rename("data\\rixml.xml", f"data\\{research_id}_rixml.xml")
+    if os.path.isfile("data\\summary.html"):
+        os.rename("data\\summary.html", f"data\\{research_id}_summary.html")
 
 def main(publication_ids):
-    try:
-        update_request_header_with_new_token()
-        for research_id in publication_ids:
-            download_and_extract_publication(research_id.strip())
-    except Exception as e:
-        print(f"An error occurred: {str(e)}")
-        sys.exit(1)
+    # Ensure data directory exists
+    os.makedirs("data", exist_ok=True)
+
+    # Get initial token
+    update_request_header_with_new_token()
+
+    # Process each publication ID
+    for research_id in publication_ids:
+        print(f"Processing publication ID: {research_id}")
+        download_and_extract_publication(research_id.strip())
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
