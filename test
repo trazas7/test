@@ -1,73 +1,51 @@
 import json
 import os.path
-import sys
 from zipfile import ZipFile
+
 import requests
 from requests.auth import HTTPBasicAuth
 
 headers = {}
 client_id = 'WAfmUZHwqyvWSiJjQ5AVq14b4i2nBNDX'
 client_secret = 'HimoDXpw5Oiqsrch'
-response = ""
 
 def update_request_header_with_new_token():
     global headers
     headers_token = {"Content-Type": "application/x-www-form-urlencoded"}
     params = {"grant_type": "client_credentials"}
-    token_response = requests.post('https://api-staging.staging.echonet/oauth2/v1/token', 
-                                   auth=HTTPBasicAuth(client_id, client_secret), 
-                                   headers=headers_token, 
-                                   params=params, 
-                                   verify=False)
-    print(json.loads(token_response.content)["access_token"])
+
+    token_response = requests.post('https://api-staging.staging.echonet/oauth2/v1/token',
+                                   auth=HTTPBasicAuth(client_id, client_secret),
+                                   headers=headers_token, params=params, verify=False)
     bearer_token = json.loads(token_response.content)["access_token"]
     headers = {"Authorization": f"Bearer {bearer_token}"}
 
-def download_and_extract_publication(research_id):
-    status = True
-    while status:
-        # download zip
-        response = requests.get(
-            f"https://api-staging.staging.echonet/gm-gm-research-content-internet/v1/documents/{research_id}",
-            headers=headers,
-            verify=False
-        )
-        # if request fails retry with new bearer token
-        if response.status_code != 200:
-            update_request_header_with_new_token()
-        else:
-            status = False
+# Function to process and download articles by IDs
+def download_articles_by_ids(article_ids):
+    for article_id in article_ids:
+        status = True
+        while status:
+            response = requests.get(
+                f"https://api-staging.staging.echonet/gm-gm-research-content-internet/v1/documents/{article_id}",
+                headers=headers, verify=False)
+            if response.status_code != 200:
+                update_request_header_with_new_token()
+            else:
+                status = False
+                # save zip
+                with open(f"data/{article_id}.zip", mode="wb") as file:
+                    file.write(response.content)
+                # extract
+                with ZipFile(f"data/{article_id}.zip", 'r') as zObject:
+                    zObject.extractall(path="data")
+                # rename files
+                os.rename("data/rixml.xml", f"data/{article_id}_rixml.xml")
+                if os.path.isfile("data/summary.html"):
+                    os.rename("data/summary.html", f"data/{article_id}_summary.html")
 
-    # save zip
-    with open(f"data/{research_id}.zip", mode="wb") as file:
-        file.write(response.content)
-
-    # extract
-    with ZipFile(f"data\\{research_id}.zip", 'r') as zObject:
-        # Extracting all the members of the zip into a specific location.
-        zObject.extractall(path="data")
-
-    # rename rixml file
-    os.rename("data\\rixml.xml", f"data\\{research_id}_rixml.xml")
-    if os.path.isfile("data\\summary.html"):
-        os.rename("data\\summary.html", f"data\\{research_id}_summary.html")
-
-def main(publication_ids):
-    # Ensure data directory exists
-    os.makedirs("data", exist_ok=True)
-
-    # Get initial token
-    update_request_header_with_new_token()
-
-    # Process each publication ID
-    for research_id in publication_ids:
-        print(f"Processing publication ID: {research_id}")
-        download_and_extract_publication(research_id.strip())
-
+# Example use
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Please provide comma-separated publication IDs as an argument.")
-        sys.exit(1)
-    
-    publication_ids = sys.argv[1].split(',')
-    main(publication_ids)
+    # Enter or list article IDs
+    article_ids = ["id1", "id2", "id3"]  # replace with actual IDs or prompt for input
+    update_request_header_with_new_token()  # Ensure you have a valid token first
+    download_articles_by_ids(article_ids)
