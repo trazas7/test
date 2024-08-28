@@ -64,29 +64,12 @@ def download_and_process_article(pub_id, headers):
             zip_ref.extractall("data")
 
         # Rename the rixml.xml file if it exists
-        rixml_path = f"data/{pub_id}_r1xml.xml"
+        rixml_path = os.path.join('data', 'rixml.xml')
         if os.path.exists(rixml_path):
-            new_rixml_path = f"data/{pub_id}_r1xml.xml"
+            new_rixml_path = os.path.join('data', f"{pub_id}_rixml.xml")
             os.rename(rixml_path, new_rixml_path)
+            print(f"Renamed rixml.xml to {new_rixml_path}")
 
-        # Rename the summary.html file if it exists
-        summary_path = f"data/summary.html"
-        if os.path.exists(summary_path):
-            new_summary_path = f"data/{pub_id}_summary.html"
-            os.rename(summary_path, new_summary_path)
-        
-        # Remove the zip file after extraction
-        os.remove(zip_path)
-        
-        # Rename files without an extension to .pdf
-        for filename in os.listdir('data'):
-            file_path = os.path.join('data', filename)
-            if os.path.isfile(file_path) and '.' not in filename:
-                new_file_path = f"{file_path}.pdf"
-                os.rename(file_path, new_file_path)
-                print(f"Renamed {filename} to {new_file_path}")
-
-        print(f"Successfully processed article {pub_id}")
     else:
         print(f"Failed to download and process article {pub_id}. Status code: {response.content}")
 
@@ -103,6 +86,21 @@ def process_articles(pub_ids, headers):
                     download_and_process_article(pub_id, headers)
                 except Exception as e:
                     print(f"Failed to process article {pub_id} after token refresh: {str(e)}")
+
+    # After all files have been processed, remove all .zip files
+    for file_name in os.listdir('data'):
+        file_path = os.path.join('data', file_name)
+        if file_name.endswith('.zip'):
+            os.remove(file_path)
+            print(f"Removed zip file: {file_path}")
+
+    # Rename files without an extension to .pdf
+    for file_name in os.listdir('data'):
+        file_path = os.path.join('data', file_name)
+        if os.path.isfile(file_path) and '.' not in file_name:
+            new_file_path = f"{file_path}.pdf"
+            os.rename(file_path, new_file_path)
+            print(f"Renamed {file_name} to {new_file_path}")
 
 def main():
     token = update_token()
