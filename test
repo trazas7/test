@@ -1,92 +1,111 @@
 import json
 import os
-import sys
-from zipfile import ZipFile
-
 import requests
 from requests.auth import HTTPBasicAuth
+from zipfile import ZipFile
+from datetime import datetime, timedelta
+import urllib3
+import warnings
 
 # Suppress insecure request warnings
-# urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-headers = {}
-client_id = "WAfmUZHwqyWS1Jjq5AVq14b4i2nBNDX"
-client_secret = "HimoDKpw5OiQisrch"
-response = ""
+# Configuration
+client_id = 'WAfmUZHwqyyWS1Jq5AVq14b4iznBNDX'
+client_secret = 'HimoOPxw5Oigarsch'
+base_url = 'https://api-staging.staging.echonet/gm-gm-research-content-internet/v1/documents'
+search_url = f'{base_url}/search/FILTERED'
+proxies = {
+    'http': 'http://ncproxy:8080',
+    'https': 'http://ncproxy:8080',
+}
 
-# Base URL for the API
-base_url = 'https://api-staging.staging.echonet'
-
-def update_request_header_with_new_token():
-    global headers
-    headers_token = {"Content-Type": "application/x-www-form-urlencoded"}
+def update_token():
+    token_url = 'https://api-staging.staging.echonet/oauth2/v1/token'
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
     params = {"grant_type": "client_credentials"}
-
-    token_response = requests.post(f'{base_url}/oauth2/v1/token',
-                                   auth=HTTPBasicAuth(client_id, client_secret),
-                                   headers=headers_token, params=params, verify=False)
     
-    # Check if the request was successful
-    if token_response.status_code == 200:
-        try:
-            token_data = json.loads(token_response.content)
-            print("Token response:", token_data)  # Print the token response for debugging
-            bearer_token = token_data.get("access_token")
-            if bearer_token:
-                headers = {"Authorization": f"Bearer {bearer_token}"}
-            else:
-                print("Error: 'access_token' not found in the response.")
-                sys.exit(1)
-        except json.JSONDecodeError:
-            print("Error: Unable to decode JSON response.")
-            sys.exit(1)
+    response = requests.post(token_url, auth=HTTPBasicAuth(client_id, client_secret), headers=headers, params=params, verify=False, proxies=proxies)
+    
+    if response.status_code == 200:
+        return response.json()["access_token"]
     else:
-        print(f"Error: Unable to fetch token. Status code: {token_response.status_code}")
-        print("Response content:", token_response.content)
-        sys.exit(1)
+        raise Exception("Failed to obtain token")
 
-if len(sys.argv) < 2:
-    print("Please provide publication IDs as a comma-separated list.")
-    sys.exit(1)
+def search_articles(headers, days=2):
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=days)
+    search_params = {
+        "startDate": f"now-{days}d/d",
+        "endDate": "now/d"
+    }
 
-pub_ids = sys.argv[1].split(',')
+    response = requests.post(search_url, json=search_params, headers=headers, verify=False, proxies=proxies)
+    
+    if response.status_code == 200:
+        return [doc["researchId"] for doc in response.json().get("researchDocuments", [])]
+    else:
+        raise Exception(f"Search failed. Status code: {response.content}")
 
-# Create data directory if it doesn't exist
-if not os.path.exists('data'):
-    os.makedirs('data')
+def download_and_process_article(pub_id, headers):
+    url = f"{base_url}/{pub_id}"
+    response = requests.get(url, headers=headers, verify=False, proxies=proxies)
 
-for pub_id in pub_ids:
-    pub_id = pub_id.strip()
-    print(f"Processing publication ID: {pub_id}")
-    status = True
-    while status:
-        # Download zip
-        response = requests.get(
-            f"{base_url}/gm-gm-research-content-internet/v1/documents/{pub_id}",
-            headers=headers, verify=False)
+    if response.status_code == 200:
+        # Ensure 'data' directory exists
+        os.makedirs('data', exist_ok=True)
+        print(f"Saving data in folder: 'data'")
+
+        zip_path = f"data/{pub_id}.zip"
+        with open(zip_path, "wb") as file:
+            file.write(response.content)
+
+        with ZipFile(zip_path, mode="r") as zip_ref:
+            zip_ref.extractall("data")
+
+        # Remove the zip file after extraction
+        os.remove(zip_path)
         
-        # If request fails, retry with new bearer token
-        if response.status_code != 200:
-            update_request_header_with_new_token()
-        else:
-            status = False
-            # Save zip
-            zip_path = f"data/{pub_id}.zip"
-            with open(zip_path, mode="wb") as file:
-                file.write(response.content)
-            
-            # Extract contents of the zip
-            with ZipFile(zip_path, 'r') as zObject:
-                # Extracting all the members of the zip into the "data" directory
-                zObject.extractall(path="data")
-            
-            # Rename rixml and summary files if they exist
-            rixml_path = os.path.join("data", "rixml.xml")
-            if os.path.exists(rixml_path):
-                os.rename(rixml_path, f"data/{pub_id}_rixml.xml")
-            
-            summary_path = os.path.join("data", "summary.html")
-            if os.path.exists(summary_path):
-                os.rename(summary_path, f"data/{pub_id}_summary.html")
+        # Rename files without an extension to .pdf
+        for filename in os.listdir('data'):
+            file_path = os.path.join('data', filename)
+            if os.path.isfile(file_path) and '.' not in filename:
+                new_file_path = f"{file_path}.pdf"
+                os.rename(file_path, new_file_path)
+                print(f"Renamed {filename} to {new_file_path}")
 
-print("All publications processed successfully.")
+        print(f"Successfully processed article {pub_id}")
+    else:
+        print(f"Failed to download and process article {pub_id}. Status code: {response.content}")
+
+def process_articles(pub_ids, headers):
+    for pub_id in pub_ids:
+        try:
+            download_and_process_article(pub_id, headers)
+        except Exception as e:
+            print(f"Error processing article {pub_id}: {str(e)}")
+            if "token" in str(e).lower():
+                token = update_token()
+                headers = {"Authorization": f"Bearer {token}"}
+                try:
+                    download_and_process_article(pub_id, headers)
+                except Exception as e:
+                    print(f"Failed to process article {pub_id} after token refresh: {str(e)}")
+
+def main():
+    token = update_token()
+    headers = {"Authorization": f"Bearer {token}"}
+
+    choice = input("Enter '1' to search and download, or '2' to provide a list of IDs: ")
+
+    if choice == '1':
+        pub_ids = search_articles(headers, days=2)
+        process_articles(pub_ids, headers)
+    elif choice == '2':
+        pub_ids = input("Enter the publication IDs separated by a space: ").split()
+        process_articles(pub_ids, headers)
+    else:
+        print("Invalid choice")
+
+if __name__ == "__main__":
+    main()
