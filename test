@@ -25,9 +25,25 @@ def update_request_header_with_new_token():
     token_response = requests.post(f'{base_url}/oauth2/v1/token',
                                    auth=HTTPBasicAuth(client_id, client_secret),
                                    headers=headers_token, params=params, verify=False)
-
-    bearer_token = json.loads(token_response.content)["access_token"]
-    headers = {"Authorization": f"Bearer {bearer_token}"}
+    
+    # Check if the request was successful
+    if token_response.status_code == 200:
+        try:
+            token_data = json.loads(token_response.content)
+            print("Token response:", token_data)  # Print the token response for debugging
+            bearer_token = token_data.get("access_token")
+            if bearer_token:
+                headers = {"Authorization": f"Bearer {bearer_token}"}
+            else:
+                print("Error: 'access_token' not found in the response.")
+                sys.exit(1)
+        except json.JSONDecodeError:
+            print("Error: Unable to decode JSON response.")
+            sys.exit(1)
+    else:
+        print(f"Error: Unable to fetch token. Status code: {token_response.status_code}")
+        print("Response content:", token_response.content)
+        sys.exit(1)
 
 if len(sys.argv) < 2:
     print("Please provide publication IDs as a comma-separated list.")
