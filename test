@@ -1,51 +1,76 @@
 import json
-import os.path
+import os
+import sys
 from zipfile import ZipFile
 
 import requests
 from requests.auth import HTTPBasicAuth
 
+# Suppress insecure request warnings
+# urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 headers = {}
-client_id = 'WAfmUZHwqyvWSiJjQ5AVq14b4i2nBNDX'
-client_secret = 'HimoDXpw5Oiqsrch'
+client_id = "WAfmUZHwqyWS1Jjq5AVq14b4i2nBNDX"
+client_secret = "HimoDKpw5OiQisrch"
+response = ""
+
+# Base URL for the API
+base_url = 'https://api-staging.staging.echonet'
 
 def update_request_header_with_new_token():
     global headers
     headers_token = {"Content-Type": "application/x-www-form-urlencoded"}
     params = {"grant_type": "client_credentials"}
 
-    token_response = requests.post('https://api-staging.staging.echonet/oauth2/v1/token',
+    token_response = requests.post(f'{base_url}/oauth2/v1/token',
                                    auth=HTTPBasicAuth(client_id, client_secret),
                                    headers=headers_token, params=params, verify=False)
+
     bearer_token = json.loads(token_response.content)["access_token"]
     headers = {"Authorization": f"Bearer {bearer_token}"}
 
-# Function to process and download articles by IDs
-def download_articles_by_ids(article_ids):
-    for article_id in article_ids:
-        status = True
-        while status:
-            response = requests.get(
-                f"https://api-staging.staging.echonet/gm-gm-research-content-internet/v1/documents/{article_id}",
-                headers=headers, verify=False)
-            if response.status_code != 200:
-                update_request_header_with_new_token()
-            else:
-                status = False
-                # save zip
-                with open(f"data/{article_id}.zip", mode="wb") as file:
-                    file.write(response.content)
-                # extract
-                with ZipFile(f"data/{article_id}.zip", 'r') as zObject:
-                    zObject.extractall(path="data")
-                # rename files
-                os.rename("data/rixml.xml", f"data/{article_id}_rixml.xml")
-                if os.path.isfile("data/summary.html"):
-                    os.rename("data/summary.html", f"data/{article_id}_summary.html")
+if len(sys.argv) < 2:
+    print("Please provide publication IDs as a comma-separated list.")
+    sys.exit(1)
 
-# Example use
-if __name__ == "__main__":
-    # Enter or list article IDs
-    article_ids = ["id1", "id2", "id3"]  # replace with actual IDs or prompt for input
-    update_request_header_with_new_token()  # Ensure you have a valid token first
-    download_articles_by_ids(article_ids)
+pub_ids = sys.argv[1].split(',')
+
+# Create data directory if it doesn't exist
+if not os.path.exists('data'):
+    os.makedirs('data')
+
+for pub_id in pub_ids:
+    pub_id = pub_id.strip()
+    print(f"Processing publication ID: {pub_id}")
+    status = True
+    while status:
+        # Download zip
+        response = requests.get(
+            f"{base_url}/gm-gm-research-content-internet/v1/documents/{pub_id}",
+            headers=headers, verify=False)
+        
+        # If request fails, retry with new bearer token
+        if response.status_code != 200:
+            update_request_header_with_new_token()
+        else:
+            status = False
+            # Save zip
+            zip_path = f"data/{pub_id}.zip"
+            with open(zip_path, mode="wb") as file:
+                file.write(response.content)
+            
+            # Extract contents of the zip
+            with ZipFile(zip_path, 'r') as zObject:
+                # Extracting all the members of the zip into the "data" directory
+                zObject.extractall(path="data")
+            
+            # Rename rixml and summary files if they exist
+            rixml_path = os.path.join("data", "rixml.xml")
+            if os.path.exists(rixml_path):
+                os.rename(rixml_path, f"data/{pub_id}_rixml.xml")
+            
+            summary_path = os.path.join("data", "summary.html")
+            if os.path.exists(summary_path):
+                os.rename(summary_path, f"data/{pub_id}_summary.html")
+
+print("All publications processed successfully.")
