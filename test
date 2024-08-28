@@ -1,34 +1,66 @@
-def download_and_process_article(pub_id, headers):
-    url = f"{base_url}/{pub_id}"
-    response = requests.get(url, headers=headers, verify=False)
+import json
+import os
+import sys
+from zipfile import ZipFile
+import requests
+from requests.auth import HTTPBasicAuth
 
-    if response.status_code == 200:
-        # Ensure 'data' directory exists
-        os.makedirs("data", exist_ok=True)
-        print(f"Saving data in folder: {os.path.abspath('data')}")
+headers = {}
+client_id = 'WAfmUZHwqyvWSiJjQ5AVq14b4i2nBNDX'
+client_secret = 'HimoDXpw5Oiqsrch'
 
-        zip_path = f"data/{pub_id}.zip"
-        with open(zip_path, "wb") as file:
-            file.write(response.content)
+def update_request_header_with_new_token():
+    global headers
+    headers_token = {"Content-Type": "application/x-www-form-urlencoded"}
+    params = {"grant_type": "client_credentials"}
+    token_response = requests.post('https://api-staging.staging.echonet/oauth2/v1/token', 
+                                   auth=HTTPBasicAuth(client_id, client_secret), 
+                                   headers=headers_token, 
+                                   params=params, 
+                                   verify=False)
+    bearer_token = json.loads(token_response.content)["access_token"]
+    headers = {"Authorization": f"Bearer {bearer_token}"}
+    print("Token updated successfully.")
 
-        with ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall("data")
+def download_and_extract_publication(research_id):
+    status = True
+    while status:
+        # download zip
+        response = requests.get(
+            f"https://api-staging.staging.echonet/gm-gm-research-content-internet/v1/documents/{research_id}",
+            headers=headers,
+            verify=False
+        )
+        # if request fails retry with new bearer token
+        if response.status_code != 200:
+            print(f"Failed to download {research_id}. Updating token and retrying...")
+            update_request_header_with_new_token()
+        else:
+            status = False
+    
+    # Create data directory if it doesn't exist
+    os.makedirs("data", exist_ok=True)
+    
+    # save zip
+    with open(f"data/{research_id}.zip", mode="wb") as file:
+        file.write(response.content)
+    
+    # extract
+    with ZipFile(f"data/{research_id}.zip", 'r') as zObject:
+        # Extracting all the members of the zip into a specific location.
+        zObject.extractall(path=f"data/{research_id}")
+    
+    print(f"Successfully downloaded and extracted {research_id}")
 
-        # Rename files to include pub_id and add .pdf extension if no extension
-        for file in os.listdir("data"):
-            file_path = os.path.join("data", file)
-            if file.endswith(".xml") and file != f"{pub_id}_rixml.xml":
-                os.rename(file_path, os.path.join("data", f"{pub_id}_rixml.xml"))
-            elif file.endswith(".html") and file != f"{pub_id}_summary.html":
-                os.rename(file_path, os.path.join("data", f"{pub_id}_summary.html"))
-            elif not os.path.splitext(file)[1]:  # If file has no extension
-                os.rename(file_path, os.path.join("data", f"{file}.pdf"))
+def main(publication_ids):
+    update_request_header_with_new_token()
+    for research_id in publication_ids:
+        download_and_extract_publication(research_id.strip())
 
-        # Remove all zip files in the data directory
-        for file in os.listdir("data"):
-            if file.endswith(".zip"):
-                os.remove(os.path.join("data", file))
-
-        print(f"Successfully processed article {pub_id}")
-    else:
-        print(f"Failed to download article {pub_id}. Status code: {response.status_code}")
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Please provide comma-separated publication IDs as an argument.")
+        sys.exit(1)
+    
+    publication_ids = sys.argv[1].split(',')
+    main(publication_ids)
