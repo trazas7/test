@@ -1,0 +1,38 @@
+def download_and_process_article(pub_id, headers):
+    url = f"{base_url}/{pub_id}"
+    response = requests.get(url, headers=headers, verify=False, proxies=proxies)
+    
+    if response.status_code == 200:
+        # Ensure 'data' directory exists
+        os.makedirs("data", exist_ok=True)
+        print(f"Saving data in folder: {os.path.abspath('data')}")
+        
+        zip_path = f"data/temp_{pub_id}.zip"
+        with open(zip_path, "wb") as file:
+            file.write(response.content)
+        
+        # Extract files to a temporary directory
+        temp_extract_dir = f"data/temp_{pub_id}"
+        os.makedirs(temp_extract_dir, exist_ok=True)
+        
+        with ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(temp_extract_dir)
+        
+        # Process extracted files
+        for filename in os.listdir(temp_extract_dir):
+            file_path = os.path.join(temp_extract_dir, filename)
+            if os.path.isfile(file_path):
+                if '.' not in filename:  # File without extension
+                    new_filename = f"{pub_id}_content.pdf"
+                    os.rename(file_path, os.path.join("data", new_filename))
+                    print(f"Renamed file to: {new_filename}")
+                else:  # Other files (including XML)
+                    os.rename(file_path, os.path.join("data", filename))
+        
+        # Clean up
+        os.remove(zip_path)
+        os.rmdir(temp_extract_dir)
+        
+        print(f"Successfully processed article {pub_id}")
+    else:
+        print(f"Failed to download article {pub_id}. Status code: {response.content}")
