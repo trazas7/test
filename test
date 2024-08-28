@@ -18,25 +18,41 @@ def update_request_header_with_new_token():
                                    headers=headers_token, 
                                    params=params, 
                                    verify=False)
-    bearer_token = json.loads(token_response.content)["access_token"]
-    headers = {"Authorization": f"Bearer {bearer_token}"}
-    print("Token updated successfully.")
+    
+    if token_response.status_code != 200:
+        print(f"Failed to obtain token. Status code: {token_response.status_code}")
+        print(f"Response content: {token_response.content}")
+        raise Exception("Failed to obtain access token")
+
+    try:
+        response_data = json.loads(token_response.content)
+        bearer_token = response_data["access_token"]
+        headers = {"Authorization": f"Bearer {bearer_token}"}
+        print("Token updated successfully.")
+    except KeyError as e:
+        print(f"KeyError: {str(e)}")
+        print(f"Response content: {response_data}")
+        raise Exception("Failed to extract access token from response")
+    except json.JSONDecodeError:
+        print(f"Failed to decode JSON. Response content: {token_response.content}")
+        raise Exception("Failed to decode JSON response")
 
 def download_and_extract_publication(research_id):
     status = True
     while status:
-        # download zip
-        response = requests.get(
-            f"https://api-staging.staging.echonet/gm-gm-research-content-internet/v1/documents/{research_id}",
-            headers=headers,
-            verify=False
-        )
-        # if request fails retry with new bearer token
-        if response.status_code != 200:
-            print(f"Failed to download {research_id}. Updating token and retrying...")
-            update_request_header_with_new_token()
-        else:
+        try:
+            # download zip
+            response = requests.get(
+                f"https://api-staging.staging.echonet/gm-gm-research-content-internet/v1/documents/{research_id}",
+                headers=headers,
+                verify=False
+            )
+            response.raise_for_status()  # Raises an HTTPError for bad responses
             status = False
+        except requests.exceptions.RequestException as e:
+            print(f"Failed to download {research_id}. Error: {str(e)}")
+            print("Updating token and retrying...")
+            update_request_header_with_new_token()
     
     # Create data directory if it doesn't exist
     os.makedirs("data", exist_ok=True)
@@ -53,9 +69,13 @@ def download_and_extract_publication(research_id):
     print(f"Successfully downloaded and extracted {research_id}")
 
 def main(publication_ids):
-    update_request_header_with_new_token()
-    for research_id in publication_ids:
-        download_and_extract_publication(research_id.strip())
+    try:
+        update_request_header_with_new_token()
+        for research_id in publication_ids:
+            download_and_extract_publication(research_id.strip())
+    except Exception as e:
+        print(f"An error occurred: {str(e)}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
