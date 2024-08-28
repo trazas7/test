@@ -63,6 +63,18 @@ def download_and_process_article(pub_id, headers):
         with ZipFile(zip_path, mode="r") as zip_ref:
             zip_ref.extractall("data")
 
+        # Rename the rixml.xml file if it exists
+        rixml_path = f"data/{pub_id}_r1xml.xml"
+        if os.path.exists(rixml_path):
+            new_rixml_path = f"data/{pub_id}_r1xml.xml"
+            os.rename(rixml_path, new_rixml_path)
+
+        # Rename the summary.html file if it exists
+        summary_path = f"data/summary.html"
+        if os.path.exists(summary_path):
+            new_summary_path = f"data/{pub_id}_summary.html"
+            os.rename(summary_path, new_summary_path)
+        
         # Remove the zip file after extraction
         os.remove(zip_path)
         
