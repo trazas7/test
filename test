@@ -47,7 +47,16 @@ def search_articles(headers, days=2):
     else:
         raise Exception(f"Search failed. Status code: {response.content}")
 
-def download_and_process_article(pub_id, headers):
+def ensure_unique_filename(directory, filename):
+    base_name, extension = os.path.splitext(filename)
+    counter = 1
+    new_filename = filename
+    while os.path.exists(os.path.join(directory, new_filename)):
+        new_filename = f"{base_name}_{counter}{extension}"
+        counter += 1
+    return new_filename
+
+def download_and_process_article(pub_id, pub_datetime, headers):
     url = f"{base_url}/{pub_id}"
     response = requests.get(url, headers=headers, verify=False, proxies=proxies)
 
@@ -66,56 +75,51 @@ def download_and_process_article(pub_id, headers):
         # Rename the rixml.xml file if it exists
         rixml_path = os.path.join('data', 'rixml.xml')
         if os.path.exists(rixml_path):
-            new_rixml_path = os.path.join('data', f"{pub_id}_rixml.xml")
-            os.rename(rixml_path, new_rixml_path)
-            print(f"Renamed rixml.xml to {new_rixml_path}")
+            new_rixml_filename = ensure_unique_filename('data', f"{pub_id}_{pub_datetime}.xml")
+            os.rename(rixml_path, os.path.join('data', new_rixml_filename))
+            print(f"Renamed rixml.xml to {new_rixml_filename}")
+
+        # Remove the zip file after extraction
+        os.remove(zip_path)
+        
+        # Rename files without an extension to .pdf, including the datetime
+        for file_name in os.listdir('data'):
+            file_path = os.path.join('data', file_name)
+            if os.path.isfile(file_path) and '.' not in file_name:
+                new_pdf_filename = ensure_unique_filename('data', f"{pub_id}_{pub_datetime}.pdf")
+                os.rename(file_path, os.path.join('data', new_pdf_filename))
+                print(f"Renamed {file_name} to {new_pdf_filename}")
 
     else:
         print(f"Failed to download and process article {pub_id}. Status code: {response.content}")
 
-def process_articles(pub_ids, headers):
-    for pub_id in pub_ids:
+def process_articles(pub_ids_with_dates, headers):
+    for pub_id, pub_datetime in pub_ids_with_dates:
         try:
-            download_and_process_article(pub_id, headers)
+            download_and_process_article(pub_id, pub_datetime, headers)
         except Exception as e:
             print(f"Error processing article {pub_id}: {str(e)}")
             if "token" in str(e).lower():
                 token = update_token()
                 headers = {"Authorization": f"Bearer {token}"}
                 try:
-                    download_and_process_article(pub_id, headers)
+                    download_and_process_article(pub_id, pub_datetime, headers)
                 except Exception as e:
                     print(f"Failed to process article {pub_id} after token refresh: {str(e)}")
-
-    # After all files have been processed, remove all .zip files
-    for file_name in os.listdir('data'):
-        file_path = os.path.join('data', file_name)
-        if file_name.endswith('.zip'):
-            os.remove(file_path)
-            print(f"Removed zip file: {file_path}")
-
-    # Rename files without an extension to .pdf
-    for file_name in os.listdir('data'):
-        file_path = os.path.join('data', file_name)
-        if os.path.isfile(file_path) and '.' not in file_name:
-            new_file_path = f"{file_path}.pdf"
-            os.rename(file_path, new_file_path)
-            print(f"Renamed {file_name} to {new_file_path}")
 
 def main():
     token = update_token()
     headers = {"Authorization": f"Bearer {token}"}
 
-    choice = input("Enter '1' to search and download, or '2' to provide a list of IDs: ")
+    choice = input("Enter '1' to search and download, or '2' to provide a list of IDs with dates: ")
 
     if choice == '1':
         pub_ids = search_articles(headers, days=2)
-        process_articles(pub_ids, headers)
+        pub_ids_with_dates = [(pub_id, datetime.now().strftime("%d%m%y%H%M%S")) for pub_id in pub_ids] # You can replace with actual dates if available
+        process_articles(pub_ids_with_dates, headers)
     elif choice == '2':
-        pub_ids = input("Enter the publication IDs separated by a space: ").split()
-        process_articles(pub_ids, headers)
+        input_data = input("Enter the publication IDs and dates (format: pub_id1:060824141939 pub_id2:060824141939): ").split()
+        pub_ids_with_dates = [tuple(item.split(':')) for item in input_data]
+        process_articles(pub_ids_with_dates, headers)
     else:
         print("Invalid choice")
-
-if __name__ == "__main__":
-    main()
