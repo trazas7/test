@@ -1,1 +1,3 @@
 
+expression:
+   `"firstname"\s*:\s*"([^"]+)".*\n(?=.*"firstname"\s*:\s*"\1")`
