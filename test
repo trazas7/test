@@ -1,3 +1,2 @@
 
-enter this regular expression:
-   `"enablementContactId"\s*:\s*"([^"]+)".*\n(?=.*"enablementContactId"\s*:\s*"\1")`
+start processing attention grabbing notification for user: (ECO-[A-Z0-9]+).*\n(?=.*start processing attention grabbing notification for user: \1)
