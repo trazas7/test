@@ -1,3 +1,36 @@
+@Configuration
+@EnableCaching
+public class HazelcastConfig {
 
-start processing attention grabbing notification for user: (ECO-[A-Z0-9]+).*\n(?=[\s\S]*start processing attention grabbing notification for user: \1)
-"enablementContactId"\s*:\s*"([^"]+)".*\n(?=.*"enablementContactId"\s*:\s*"\1")
+    @Value("${spring.application.name}")
+    private String applicationName;
+
+    @Bean
+    public Config hazelcastConfig(EurekaClient eurekaClient) {
+        Config config = new Config();
+        config.setInstanceName(applicationName)
+              .setProperty("hazelcast.discovery.enabled", "true");
+        
+        NetworkConfig networkConfig = config.getNetworkConfig();
+        JoinConfig joinConfig = networkConfig.getJoin();
+        joinConfig.getMulticastConfig().setEnabled(false);
+        joinConfig.getTcpIpConfig().setEnabled(false);
+        
+        // Configure Eureka discovery strategy
+        DiscoveryStrategyConfig discoveryStrategyConfig = new DiscoveryStrategyConfig(new EurekaOneDiscoveryStrategyFactory());
+        discoveryStrategyConfig.addProperty("self-registration", "true");
+        discoveryStrategyConfig.addProperty("namespace", "hazelcast");
+        
+        DiscoveryConfig discoveryConfig = new DiscoveryConfig();
+        discoveryConfig.addDiscoveryStrategyConfig(discoveryStrategyConfig);
+        
+        joinConfig.setDiscoveryConfig(discoveryConfig);
+
+        return config;
+    }
+
+    @Bean
+    public HazelcastInstance hazelcastInstance(Config config) {
+        return Hazelcast.newHazelcastInstance(config);
+    }
+}
