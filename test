@@ -1,51 +1,81 @@
 import com.hazelcast.config.Config;
+import com.hazelcast.config.EvictionConfig;
+import com.hazelcast.config.GroupConfig;
 import com.hazelcast.config.JoinConfig;
+import com.hazelcast.config.MapConfig;
 import com.hazelcast.config.NetworkConfig;
-import com.hazelcast.core.HazelcastInstance;
-import com.hazelcast.spring.cache.HazelcastCacheManager;
-import org.springframework.cache.annotation.EnableCaching;
+import com.hazelcast.spi.discovery.integration.DiscoveryServiceProvider;
+import com.hazelcast.eureka.one.EurekaOneDiscoveryStrategyFactory;
+import com.hazelcast.spi.discovery.DiscoveryStrategyConfig;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.util.HashMap;
+import java.util.Map;
+
 @Configuration
-@EnableCaching
 public class HazelcastConfig {
 
     @Bean
     public Config hazelcastConfig() {
         Config config = new Config();
+
+        // Set instance name and cluster group (optional)
+        config.setInstanceName("hazelcast-cluster");
+        config.setGroupConfig(new GroupConfig("xxxx", "xx"));
+
+        // Set Hazelcast properties
+        config.setProperty("hazelcast.discovery.enabled", "true");
+        config.setProperty("hazelcast.jmx", "true");
+        config.setProperty("hazelcast.http.healthcheck.enabled", "true");
+        config.setProperty("hazelcast.rest.enabled", "true");
+        config.setProperty("hazelcast.logging.type", "slf4j");
+        config.setProperty("hazelcast.diagnostics.enabled", "true");
+        config.setProperty("hazelcast.diagnostics.metric.level", "info");
+        config.setProperty("hazelcast.name", "hazelcast-cluster");
+
+        // Network and Join Configuration
         NetworkConfig networkConfig = config.getNetworkConfig();
         JoinConfig joinConfig = networkConfig.getJoin();
 
-        joinConfig.getMulticastConfig().setEnabled(false); // Disable multicast
-        joinConfig.getEurekaConfig().setEnabled(true); // Enable Eureka discovery
+        // Disable multicast, TCP/IP, AWS
+        joinConfig.getMulticastConfig().setEnabled(false);
+        joinConfig.getTcpIpConfig().setEnabled(false);
+        joinConfig.getAwsConfig().setEnabled(false);
+
+        // Configure EurekaOneDiscoveryStrategy
+        Map<String, Comparable> discoveryStrategyProperties = new HashMap<>();
+        discoveryStrategyProperties.put("self-registration", "true");
+        discoveryStrategyProperties.put("namespace", "hazelcast");
+
+        DiscoveryStrategyConfig discoveryStrategyConfig = new DiscoveryStrategyConfig(
+            new EurekaOneDiscoveryStrategyFactory(), discoveryStrategyProperties);
+
+        joinConfig.getDiscoveryConfig().addDiscoveryStrategyConfig(discoveryStrategyConfig);
+
+        // Configure contactById map
+        MapConfig contactByIdMapConfig = new MapConfig();
+        contactByIdMapConfig.setName("contactById");
+        contactByIdMapConfig.setBackupCount(2); // Set number of backups
+        contactByIdMapConfig.setTimeToLiveSeconds(3600); // Set TTL for entries (1 hour)
+        contactByIdMapConfig.setEvictionConfig(new EvictionConfig()
+                .setEvictionPolicy(EvictionConfig.EvictionPolicy.LRU) // Eviction policy
+                .setMaxSizePolicy(EvictionConfig.MaxSizePolicy.FREE_HEAP_SIZE)); // Limit by heap size
+
+        // Configure contactByIdV2 map
+        MapConfig contactByIdV2MapConfig = new MapConfig();
+        contactByIdV2MapConfig.setName("contactByIdV2");
+        contactByIdV2MapConfig.setBackupCount(3); // Different backup count for V2
+        contactByIdV2MapConfig.setTimeToLiveSeconds(7200); // Different TTL (2 hours)
+        contactByIdV2MapConfig.setEvictionConfig(new EvictionConfig()
+                .setEvictionPolicy(EvictionConfig.EvictionPolicy.LRU)
+                .setMaxSizePolicy(EvictionConfig.MaxSizePolicy.USED_HEAP_PERCENTAGE) // Limit by used heap percentage
+                .setSize(80)); // Evict when heap reaches 80%
+
+        // Add map configurations to Hazelcast config
+        config.addMapConfig(contactByIdMapConfig);
+        config.addMapConfig(contactByIdV2MapConfig);
 
         return config;
-    }
-
-    @Bean
-    public HazelcastCacheManager cacheManager(HazelcastInstance hazelcastInstance) {
-        return new HazelcastCacheManager(hazelcastInstance);
-    }
-}
-
-
-hazelcast:
-  discovery:
-    enabled: true
-
-eureka:
-  client:
-    serviceUrl:
-      defaultZone: http://localhost:8761/eureka/
-
-
-@Service
-public class MyService {
-
-    @Cacheable("myCache")
-    public String getExpensiveData(String input) {
-        // Expensive operation
-        return "Result for " + input;
     }
 }
