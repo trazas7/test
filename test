@@ -1,52 +1,51 @@
-import com.hazelcast.config.*;
-import com.hazelcast.eureka.one.EurekaOneDiscoveryStrategyFactory;
+import com.hazelcast.config.Config;
+import com.hazelcast.config.JoinConfig;
+import com.hazelcast.config.NetworkConfig;
 import com.hazelcast.core.HazelcastInstance;
-import com.netflix.discovery.EurekaClient;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.cloud.client.discovery.DiscoveryClient;
+import com.hazelcast.spring.cache.HazelcastCacheManager;
+import org.springframework.cache.annotation.EnableCaching;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.cache.annotation.EnableCaching;
 
 @Configuration
 @EnableCaching
 public class HazelcastConfig {
 
-    @Value("${spring.application.name}")
-    private String applicationName;
-
-    @Value("${eureka.client.serviceUrl.defaultZone}")
-    private String eurekaServerUrl;
-
     @Bean
-    public Config hazelcastConfig(EurekaClient eurekaClient, DiscoveryClient discoveryClient) {
+    public Config hazelcastConfig() {
         Config config = new Config();
-        config.setInstanceName(applicationName)
-              .setProperty("hazelcast.discovery.enabled", "true");
-        
         NetworkConfig networkConfig = config.getNetworkConfig();
         JoinConfig joinConfig = networkConfig.getJoin();
-        joinConfig.getMulticastConfig().setEnabled(false);
-        joinConfig.getTcpIpConfig().setEnabled(false);
-        
-        // Configure Eureka discovery strategy
-        DiscoveryStrategyConfig discoveryStrategyConfig = new DiscoveryStrategyConfig(new EurekaOneDiscoveryStrategyFactory());
-        discoveryStrategyConfig.addProperty("self-registration", "true");
-        discoveryStrategyConfig.addProperty("namespace", "hazelcast");
-        discoveryStrategyConfig.addProperty("use-classpath-eureka-client-props", "false");
-        discoveryStrategyConfig.addProperty("name", applicationName);
-        discoveryStrategyConfig.addProperty("serviceUrl.default", eurekaServerUrl);
-        
-        DiscoveryConfig discoveryConfig = new DiscoveryConfig();
-        discoveryConfig.addDiscoveryStrategyConfig(discoveryStrategyConfig);
-        
-        joinConfig.setDiscoveryConfig(discoveryConfig);
+
+        joinConfig.getMulticastConfig().setEnabled(false); // Disable multicast
+        joinConfig.getEurekaConfig().setEnabled(true); // Enable Eureka discovery
 
         return config;
     }
 
     @Bean
-    public HazelcastInstance hazelcastInstance(Config config) {
-        return Hazelcast.newHazelcastInstance(config);
+    public HazelcastCacheManager cacheManager(HazelcastInstance hazelcastInstance) {
+        return new HazelcastCacheManager(hazelcastInstance);
+    }
+}
+
+
+hazelcast:
+  discovery:
+    enabled: true
+
+eureka:
+  client:
+    serviceUrl:
+      defaultZone: http://localhost:8761/eureka/
+
+
+@Service
+public class MyService {
+
+    @Cacheable("myCache")
+    public String getExpensiveData(String input) {
+        // Expensive operation
+        return "Result for " + input;
     }
 }
