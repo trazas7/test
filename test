@@ -25,11 +25,16 @@ public class HazelcastConfig {
         joinConfig.getTcpIpConfig().setEnabled(false);
         joinConfig.getAwsConfig().setEnabled(false);
 
-        // Configure EurekaOneDiscoveryStrategy with use-metadata-for-host-and-port
+        // Configure EurekaOneDiscoveryStrategy without using eureka-client.properties
         Map<String, Comparable> discoveryStrategyProperties = new HashMap<>();
         discoveryStrategyProperties.put("self-registration", "true");
         discoveryStrategyProperties.put("namespace", "hazelcast");
         discoveryStrategyProperties.put("use-metadata-for-host-and-port", "true");
+
+        // Set Eureka properties directly without eureka-client.properties
+        discoveryStrategyProperties.put("eureka.serviceUrl.default", "http://<your-eureka-server-url>/eureka/");
+        discoveryStrategyProperties.put("eureka.prefer-ip-address", "true");
+        discoveryStrategyProperties.put("eureka.instance.hostname", "hazelcast-instance");
 
         DiscoveryStrategyConfig discoveryStrategyConfig = new DiscoveryStrategyConfig(
             new EurekaOneDiscoveryStrategyFactory(), discoveryStrategyProperties);
