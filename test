@@ -1,46 +1,41 @@
-import com.hazelcast.config.Config;
-import com.hazelcast.config.JoinConfig;
-import com.hazelcast.config.NetworkConfig;
-import com.hazelcast.spi.discovery.DiscoveryStrategyConfig;
-import com.hazelcast.eureka.one.EurekaOneDiscoveryStrategyFactory;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
+import org.springframework.cloud.client.ServiceInstance;
+   import org.springframework.cloud.client.discovery.DiscoveryClient;
+   import org.springframework.context.annotation.Bean;
+   import org.springframework.context.annotation.Configuration;
+   import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
+   import org.springframework.data.redis.connection.jedis.JedisConnectionFactory;
+   import org.springframework.data.redis.core.RedisTemplate;
+   import org.springframework.data.redis.serializer.GenericToStringSerializer;
 
-import java.util.HashMap;
-import java.util.Map;
+   @Configuration
+   public class RedisConfig {
 
-@Configuration
-public class HazelcastConfig {
+       private final DiscoveryClient discoveryClient;
 
-    @Bean
-    public Config hazelcastConfig() {
-        Config config = new Config();
+       public RedisConfig(DiscoveryClient discoveryClient) {
+           this.discoveryClient = discoveryClient;
+       }
 
-        // Network and Join Configuration
-        NetworkConfig networkConfig = config.getNetworkConfig();
-        JoinConfig joinConfig = networkConfig.getJoin();
+       @Bean
+       public JedisConnectionFactory jedisConnectionFactory() {
+           List<ServiceInstance> instances = discoveryClient.getInstances("REDIS-SERVICE");
+           if (instances.isEmpty()) {
+               throw new IllegalStateException("Redis service not found in Eureka");
+           }
+           ServiceInstance redisService = instances.get(0);
+           
+           RedisStandaloneConfiguration config = new RedisStandaloneConfiguration();
+           config.setHostName(redisService.getHost());
+           config.setPort(redisService.getPort());
+           
+           return new JedisConnectionFactory(config);
+       }
 
-        // Disable multicast, TCP/IP, AWS
-        joinConfig.getMulticastConfig().setEnabled(false);
-        joinConfig.getTcpIpConfig().setEnabled(false);
-        joinConfig.getAwsConfig().setEnabled(false);
-
-        // Configure EurekaOneDiscoveryStrategy without using eureka-client.properties
-        Map<String, Comparable> discoveryStrategyProperties = new HashMap<>();
-        discoveryStrategyProperties.put("self-registration", "true");
-        discoveryStrategyProperties.put("namespace", "hazelcast");
-        discoveryStrategyProperties.put("use-metadata-for-host-and-port", "true");
-
-        // Set Eureka properties directly without eureka-client.properties
-        discoveryStrategyProperties.put("eureka.serviceUrl.default", "http://<your-eureka-server-url>/eureka/");
-        discoveryStrategyProperties.put("eureka.prefer-ip-address", "true");
-        discoveryStrategyProperties.put("eureka.instance.hostname", "hazelcast-instance");
-
-        DiscoveryStrategyConfig discoveryStrategyConfig = new DiscoveryStrategyConfig(
-            new EurekaOneDiscoveryStrategyFactory(), discoveryStrategyProperties);
-
-        joinConfig.getDiscoveryConfig().addDiscoveryStrategyConfig(discoveryStrategyConfig);
-
-        return config;
-    }
-}
+       @Bean
+       public RedisTemplate<String, Object> redisTemplate() {
+           final RedisTemplate<String, Object> template = new RedisTemplate<>();
+           template.setConnectionFactory(jedisConnectionFactory());
+           template.setValueSerializer(new GenericToStringSerializer<>(Object.class));
+           return template;
+       }
+   }
