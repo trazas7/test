@@ -1,41 +1,41 @@
 import org.springframework.cloud.client.ServiceInstance;
-   import org.springframework.cloud.client.discovery.DiscoveryClient;
-   import org.springframework.context.annotation.Bean;
-   import org.springframework.context.annotation.Configuration;
-   import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
-   import org.springframework.data.redis.connection.jedis.JedisConnectionFactory;
-   import org.springframework.data.redis.core.RedisTemplate;
-   import org.springframework.data.redis.serializer.GenericToStringSerializer;
+import org.springframework.cloud.client.discovery.DiscoveryClient;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
+import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
+import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.serializer.GenericToStringSerializer;
 
-   @Configuration
-   public class RedisConfig {
+@Configuration
+public class RedisConfig {
 
-       private final DiscoveryClient discoveryClient;
+    private final DiscoveryClient discoveryClient;
 
-       public RedisConfig(DiscoveryClient discoveryClient) {
-           this.discoveryClient = discoveryClient;
-       }
+    public RedisConfig(DiscoveryClient discoveryClient) {
+        this.discoveryClient = discoveryClient;
+    }
 
-       @Bean
-       public JedisConnectionFactory jedisConnectionFactory() {
-           List<ServiceInstance> instances = discoveryClient.getInstances("REDIS-SERVICE");
-           if (instances.isEmpty()) {
-               throw new IllegalStateException("Redis service not found in Eureka");
-           }
-           ServiceInstance redisService = instances.get(0);
-           
-           RedisStandaloneConfiguration config = new RedisStandaloneConfiguration();
-           config.setHostName(redisService.getHost());
-           config.setPort(redisService.getPort());
-           
-           return new JedisConnectionFactory(config);
-       }
+    @Bean
+    public LettuceConnectionFactory lettuceConnectionFactory() {
+        List<ServiceInstance> instances = discoveryClient.getInstances("REDIS-SERVICE");
+        if (instances.isEmpty()) {
+            throw new IllegalStateException("Redis service not found in Eureka");
+        }
+        ServiceInstance redisService = instances.get(0);
+        
+        RedisStandaloneConfiguration config = new RedisStandaloneConfiguration();
+        config.setHostName(redisService.getHost());
+        config.setPort(redisService.getPort());
+        
+        return new LettuceConnectionFactory(config);
+    }
 
-       @Bean
-       public RedisTemplate<String, Object> redisTemplate() {
-           final RedisTemplate<String, Object> template = new RedisTemplate<>();
-           template.setConnectionFactory(jedisConnectionFactory());
-           template.setValueSerializer(new GenericToStringSerializer<>(Object.class));
-           return template;
-       }
-   }
+    @Bean
+    public RedisTemplate<String, Object> redisTemplate() {
+        final RedisTemplate<String, Object> template = new RedisTemplate<>();
+        template.setConnectionFactory(lettuceConnectionFactory());
+        template.setValueSerializer(new GenericToStringSerializer<>(Object.class));
+        return template;
+    }
+}
