@@ -1,102 +1,21 @@
-import com.hazelcast.config.*;
-import com.hazelcast.core.HazelcastInstance;
-import com.hazelcast.core.Hazelcast;
-import com.hazelcast.discovery.DiscoveryStrategyConfig;
-import com.hazelcast.discovery.EurekaOneDiscoveryStrategyFactory;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.cloud.netflix.eureka.EurekaClient;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-
-import java.util.HashMap;
-import java.util.Map;
-
-@Configuration
-public class HazelcastCacheConfig {
-
-    @Value("${hazelcast.network.port}")
-    private int hazelcastPort;
-
-    @Value("${hazelcast.network.port-auto-increment}")
-    private boolean portAutoIncrement;
-
-    @Value("${hazelcast.join.multicast-enabled}")
-    private boolean multicastEnabled;
-
-    @Value("${hazelcast.join.tcp-ip-enabled}")
-    private boolean tcpIpEnabled;
-
-    @Value("${hazelcast.discovery.eureka.self-registration}")
-    private boolean selfRegistration;
-
-    @Value("${hazelcast.discovery.eureka.namespace}")
-    private String namespace;
-
-    @Value("${hazelcast.discovery.eureka.use-metadata-for-host-and-port}")
-    private boolean useMetadataForHostAndPort;
-
-    @Value("${hazelcast.cache.map.name}")
-    private String mapName;
-
-    @Value("${hazelcast.cache.map.max-size}")
-    private int maxSize;
-
-    @Value("${hazelcast.cache.map.eviction-policy}")
-    private String evictionPolicy;
-
-    @Value("${hazelcast.cache.map.ttl-seconds}")
-    private int timeToLiveSeconds;
-
-    @Value("${hazelcast.cache.map.max-idle-seconds}")
-    private int maxIdleSeconds;
-
-    @Value("${hazelcast.security.enabled}")
-    private boolean securityEnabled;
-
-    @Bean
-    public Config hazelcastConfig(EurekaClient eurekaClient) {
-        Config config = new Config();
-
-        // Enable Hazelcast Discovery
-        config.getProperties().setProperty("hazelcast.discovery.enabled", "true");
-
-        // Network Configuration
-        NetworkConfig networkConfig = config.getNetworkConfig();
-        networkConfig.setPort(hazelcastPort);
-        networkConfig.setPortAutoIncrement(portAutoIncrement);
-
-        // Join Configuration
-        JoinConfig joinConfig = networkConfig.getJoin();
-        joinConfig.getMulticastConfig().setEnabled(multicastEnabled);
-        joinConfig.getTcpIpConfig().setEnabled(tcpIpEnabled);
-
-        // Eureka Discovery Configuration
-        EurekaOneDiscoveryStrategyFactory discoveryStrategyFactory = new EurekaOneDiscoveryStrategyFactory(eurekaClient);
-        Map<String, Comparable> properties = new HashMap<>();
-        properties.put("self-registration", selfRegistration);
-        properties.put("namespace", namespace);
-        properties.put("use-metadata-for-host-and-port", useMetadataForHostAndPort);
-
-        DiscoveryStrategyConfig discoveryStrategyConfig = new DiscoveryStrategyConfig(discoveryStrategyFactory, properties);
-        joinConfig.getDiscoveryConfig().addDiscoveryStrategyConfig(discoveryStrategyConfig);
-
-        // Map Configuration
-        MapConfig mapConfig = new MapConfig(mapName);
-        mapConfig.setEvictionPolicy(EvictionPolicy.valueOf(evictionPolicy));
-        mapConfig.setMaxSizeConfig(new MaxSizeConfig(maxSize, MaxSizeConfig.MaxSizePolicy.PER_NODE));
-        mapConfig.setTimeToLiveSeconds(timeToLiveSeconds);
-        mapConfig.setMaxIdleSeconds(maxIdleSeconds);
-
-        config.addMapConfig(mapConfig);
-
-        // Security Configuration
-        config.getSecurityConfig().setEnabled(securityEnabled);
-
-        return config;
-    }
-
-    @Bean
-    public HazelcastInstance hazelcastInstance(Config config) {
-        return Hazelcast.newHazelcastInstance(config);
-    }
-}
+hazelcast:
+  network:
+    port: 5701
+    port-auto-increment: true
+  join:
+    multicast-enabled: false
+    tcp-ip-enabled: false
+  discovery:
+    eureka:
+      self-registration: true
+      namespace: hazelcast
+      use-metadata-for-host-and-port: true
+  cache:
+    map:
+      name: default
+      max-size: 10000
+      eviction-policy: LRU
+      ttl-seconds: 86400 # 24 hours
+      max-idle-seconds: 3600 # 1 hour
+  security:
+    enabled: true
