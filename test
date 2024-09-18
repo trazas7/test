@@ -1,83 +1,74 @@
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-import org.springframework.cache.CacheManager;
-import org.springframework.cache.annotation.EnableCaching;
-import org.springframework.cloud.client.ServiceInstance;
-import org.springframework.cloud.client.discovery.DiscoveryClient;
+<dependencies>
+    <!-- Existing dependencies -->
+
+    <!-- Hazelcast -->
+    <dependency>
+        <groupId>com.hazelcast</groupId>
+        <artifactId>hazelcast</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>com.hazelcast</groupId>
+        <artifactId>hazelcast-spring</artifactId>
+    </dependency>
+
+    <!-- Spring Cache -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-cache</artifactId>
+    </dependency>
+</dependencies>
+
+import com.hazelcast.config.*;
+import com.hazelcast.eureka.one.EurekaOneDiscoveryStrategyFactory;
+import com.netflix.discovery.EurekaClient;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.data.redis.cache.RedisCacheConfiguration;
-import org.springframework.data.redis.cache.RedisCacheManager;
-import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
-import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
-import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.data.redis.serializer.GenericJackson2JsonRedisSerializer;
-import org.springframework.data.redis.serializer.RedisSerializationContext;
-import org.springframework.data.redis.serializer.StringRedisSerializer;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import java.time.Duration;
-import java.util.List;
 
 @Configuration
-@EnableCaching
-public class RedisConfig {
-
-    private static final Logger log = LoggerFactory.getLogger(RedisConfig.class);
-    private final DiscoveryClient discoveryClient;
-
-    public RedisConfig(DiscoveryClient discoveryClient) {
-        this.discoveryClient = discoveryClient;
-    }
+public class HazelcastConfig {
 
     @Bean
-    public LettuceConnectionFactory lettuceConnectionFactory() {
-        List<ServiceInstance> instances = discoveryClient.getInstances("REDIS-SERVICE");
-        log.info("Found {} instances of REDIS-SERVICE", instances.size());
-        
-        if (instances.isEmpty()) {
-            log.error("Redis service not found in Eureka");
-            throw new IllegalStateException("Redis service not found in Eureka");
-        }
-        
-        ServiceInstance redisService = instances.get(0);
-        log.info("Using Redis instance at {}:{}", redisService.getHost(), redisService.getPort());
-        
-        RedisStandaloneConfiguration config = new RedisStandaloneConfiguration();
-        config.setHostName(redisService.getHost());
-        config.setPort(redisService.getPort());
-        
-        return new LettuceConnectionFactory(config);
-    }
+    public Config hazelcastConfig(EurekaClient eurekaClient) {
+        Config config = new Config();
+        config.setInstanceName("hazelcast-instance")
+              .addMapConfig(
+                new MapConfig("cache")
+                    .setTimeToLiveSeconds(3600));
 
-    @Bean
-    public RedisTemplate<String, Object> redisTemplate() {
-        RedisTemplate<String, Object> template = new RedisTemplate<>();
-        template.setConnectionFactory(lettuceConnectionFactory());
-        template.setKeySerializer(new StringRedisSerializer());
-        template.setValueSerializer(new GenericJackson2JsonRedisSerializer(objectMapper()));
-        template.setHashKeySerializer(new StringRedisSerializer());
-        template.setHashValueSerializer(new GenericJackson2JsonRedisSerializer(objectMapper()));
-        return template;
-    }
+        // Eureka-based discovery
+        DiscoveryStrategyConfig discoveryStrategyConfig = new DiscoveryStrategyConfig(new EurekaOneDiscoveryStrategyFactory());
+        discoveryStrategyConfig.addProperty("self-registration", "true");
+        discoveryStrategyConfig.addProperty("namespace", "hazelcast");
 
-    @Bean
-    public CacheManager cacheManager(LettuceConnectionFactory connectionFactory) {
-        RedisCacheConfiguration cacheConfig = RedisCacheConfiguration.defaultCacheConfig()
-            .entryTtl(Duration.ofHours(8))
-            .serializeKeysWith(RedisSerializationContext.SerializationPair.fromSerializer(new StringRedisSerializer()))
-            .serializeValuesWith(RedisSerializationContext.SerializationPair.fromSerializer(new GenericJackson2JsonRedisSerializer(objectMapper())));
+        config.getNetworkConfig()
+              .getJoin()
+              .getMulticastConfig().setEnabled(false);
+        config.getNetworkConfig()
+              .getJoin()
+              .getDiscoveryConfig()
+              .addDiscoveryStrategyConfig(discoveryStrategyConfig);
 
-        return RedisCacheManager.builder(connectionFactory)
-            .cacheDefaults(cacheConfig)
-            .build();
-    }
-
-    @Bean
-    public ObjectMapper objectMapper() {
-        ObjectMapper mapper = new ObjectMapper();
-        mapper.registerModule(new JavaTimeModule());
-        return mapper;
+        return config;
     }
 }
+
+spring:
+  application:
+    name: client-contact-service
+
+eureka:
+  client:
+    serviceUrl:
+      defaultZone: http://your-eureka-server:8761/eureka/
+  instance:
+    preferIpAddress: true
+
+hazelcast:
+  network:
+    join:
+      multicast:
+        enabled: false
+      eureka:
+        enabled: true
+
+
