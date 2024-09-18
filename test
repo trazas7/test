@@ -1,74 +1,48 @@
-<dependencies>
-    <!-- Existing dependencies -->
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
+import org.springframework.stereotype.Service;
 
-    <!-- Hazelcast -->
-    <dependency>
-        <groupId>com.hazelcast</groupId>
-        <artifactId>hazelcast</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>com.hazelcast</groupId>
-        <artifactId>hazelcast-spring</artifactId>
-    </dependency>
+@Service
+public class ContactService {
 
-    <!-- Spring Cache -->
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-cache</artifactId>
-    </dependency>
-</dependencies>
+    @Cacheable(value = "contacts", key = "#id")
+    public Contact getContactById(String id) {
+        // This method will cache its result. Subsequent calls with the same id will return the cached value.
+        return fetchContactFromDatabase(id);
+    }
 
-import com.hazelcast.config.*;
-import com.hazelcast.eureka.one.EurekaOneDiscoveryStrategyFactory;
-import com.netflix.discovery.EurekaClient;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
+    @CacheEvict(value = "contacts", key = "#contact.id")
+    public Contact updateContact(Contact contact) {
+        // This method will update the contact and remove the old cached value.
+        Contact updatedContact = updateContactInDatabase(contact);
+        return updatedContact;
+    }
 
-@Configuration
-public class HazelcastConfig {
+    @CacheEvict(value = "contacts", allEntries = true)
+    public void clearCache() {
+        // This method will clear all entries in the 'contacts' cache.
+        System.out.println("Clearing entire contacts cache");
+    }
 
-    @Bean
-    public Config hazelcastConfig(EurekaClient eurekaClient) {
-        Config config = new Config();
-        config.setInstanceName("hazelcast-instance")
-              .addMapConfig(
-                new MapConfig("cache")
-                    .setTimeToLiveSeconds(3600));
+    private Contact fetchContactFromDatabase(String id) {
+        // Simulate database access
+        System.out.println("Fetching contact from database: " + id);
+        try {
+            Thread.sleep(1000); // Simulate slow database query
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        return new Contact(id, "John Doe", "john@example.com");
+    }
 
-        // Eureka-based discovery
-        DiscoveryStrategyConfig discoveryStrategyConfig = new DiscoveryStrategyConfig(new EurekaOneDiscoveryStrategyFactory());
-        discoveryStrategyConfig.addProperty("self-registration", "true");
-        discoveryStrategyConfig.addProperty("namespace", "hazelcast");
-
-        config.getNetworkConfig()
-              .getJoin()
-              .getMulticastConfig().setEnabled(false);
-        config.getNetworkConfig()
-              .getJoin()
-              .getDiscoveryConfig()
-              .addDiscoveryStrategyConfig(discoveryStrategyConfig);
-
-        return config;
+    private Contact updateContactInDatabase(Contact contact) {
+        // Simulate database update
+        System.out.println("Updating contact in database: " + contact.getId());
+        try {
+            Thread.sleep(500); // Simulate database update
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        return contact; // Return the updated contact
     }
 }
-
-spring:
-  application:
-    name: client-contact-service
-
-eureka:
-  client:
-    serviceUrl:
-      defaultZone: http://your-eureka-server:8761/eureka/
-  instance:
-    preferIpAddress: true
-
-hazelcast:
-  network:
-    join:
-      multicast:
-        enabled: false
-      eureka:
-        enabled: true
-
-
