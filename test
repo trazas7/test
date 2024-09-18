@@ -1,9 +1,43 @@
-MapConfig mapConfig = new MapConfig("default")
-            .setEvictionConfig(new EvictionConfig()
-                .setEvictionPolicy(EvictionPolicy.LRU)
-                .setMaxSizePolicy(MaxSizePolicy.PER_NODE)
-                .setSize(10000))
-            .setTimeToLiveSeconds(86400)  // 24 hours
-            .setMaxIdleSeconds(3600);     // 1 hour
+spring:
+  cache:
+    type: hazelcast
 
-        config.addMapConfig(mapConfig);
+hazelcast:
+  network:
+    port: 5701
+    port-auto-increment: true
+  join:
+    multicast:
+      enabled: false
+    tcp-ip:
+      enabled: false
+  discovery:
+    enabled: true
+    eureka:
+      enabled: true
+      self-registration: true
+      namespace: hazelcast
+      use-metadata-for-host-and-port: true
+  map:
+    default:
+      max-size: 10000
+      eviction-policy: LRU
+      ttl-seconds: 86400 # 24 hours
+      max-idle-seconds: 3600 # 1 hour
+  security:
+    enabled: true
+
+import com.hazelcast.config.Config;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.Hazelcast;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class HazelcastCacheConfig {
+
+    @Bean
+    public HazelcastInstance hazelcastInstance(Config config) {
+        return Hazelcast.newHazelcastInstance(config);
+    }
+}
