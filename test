@@ -1,76 +1,9 @@
-import com.hazelcast.config.*;
-import com.hazelcast.eureka.one.EurekaOneDiscoveryStrategyFactory;
-import com.netflix.discovery.EurekaClient;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
+MapConfig mapConfig = new MapConfig("default")
+            .setEvictionConfig(new EvictionConfig()
+                .setEvictionPolicy(EvictionPolicy.LRU)
+                .setMaxSizePolicy(MaxSizePolicy.PER_NODE)
+                .setSize(10000))
+            .setTimeToLiveSeconds(86400)  // 24 hours
+            .setMaxIdleSeconds(3600);     // 1 hour
 
-@Configuration
-public class HazelcastProductionConfig {
-
-    @Bean
-    public Config hazelcastConfig(EurekaClient eurekaClient) {
-        Config config = new Config();
-
-        // Enable Hazelcast discovery
-        config.getProperties().setProperty("hazelcast.discovery.enabled", "true");
-
-        // Network configuration
-        NetworkConfig networkConfig = config.getNetworkConfig();
-        networkConfig.setPort(5701);
-        networkConfig.setPortAutoIncrement(true);
-
-        // Join configuration
-        JoinConfig joinConfig = networkConfig.getJoin();
-        joinConfig.getMulticastConfig().setEnabled(false);
-        joinConfig.getTcpIpConfig().setEnabled(false);
-
-        // Eureka discovery configuration
-        EurekaOneDiscoveryStrategyFactory.setEurekaClient(eurekaClient);
-        EurekaOneDiscoveryStrategyFactory discoveryStrategyFactory = new EurekaOneDiscoveryStrategyFactory();
-        Map<String, Comparable> properties = new HashMap<>();
-        properties.put("self-registration", "true");
-        properties.put("namespace", "hazelcast");
-        properties.put("use-metadata-for-host-and-port", "true");
-        DiscoveryStrategyConfig discoveryStrategyConfig = new DiscoveryStrategyConfig(discoveryStrategyFactory, properties);
-        joinConfig.getDiscoveryConfig().addDiscoveryStrategyConfig(discoveryStrategyConfig);
-
-        // Group configuration
-        config.setClusterName("prod-cluster");
-
-        // Management Center configuration
-        config.getManagementCenterConfig()
-              .setScriptingEnabled(false)
-              .setConsoleEnabled(false);
-
-        // Security configuration
-        config.getSecurityConfig().setEnabled(true)
-              .setMemberSocketInterceptorConfig(new SocketInterceptorConfig().setEnabled(true))
-              .setClientBlockUnmappedActions(true);
-
-        // Persistence configuration
-        config.getPersistenceConfig().setEnabled(true)
-              .setBaseDir(new File("/hazelcast/persistence"));
-
-        // Performance configurations
-        config.setProperty("hazelcast.operation.thread.count", "16");
-        config.setProperty("hazelcast.io.thread.count", "8");
-        config.setProperty("hazelcast.operation.generic.thread.count", "32");
-
-        // Split-brain protection
-        config.addSplitBrainProtectionConfig(
-            new SplitBrainProtectionConfig("minimum-cluster-size", true, 3)
-        );
-
-        return config;
-    }
-
-    @Bean
-    public HazelcastInstance hazelcastInstance(Config config) {
-        return Hazelcast.newHazelcastInstance(config);
-    }
-
-    @Bean
-    public CacheManager cacheManager(HazelcastInstance hazelcastInstance) {
-        return new HazelcastCacheManager(hazelcastInstance);
-    }
-}
+        config.addMapConfig(mapConfig);
