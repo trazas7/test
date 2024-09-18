@@ -1,48 +1,76 @@
-import org.springframework.cache.annotation.CacheEvict;
-import org.springframework.cache.annotation.Cacheable;
-import org.springframework.stereotype.Service;
+import com.hazelcast.config.*;
+import com.hazelcast.eureka.one.EurekaOneDiscoveryStrategyFactory;
+import com.netflix.discovery.EurekaClient;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 
-@Service
-public class ContactService {
+@Configuration
+public class HazelcastProductionConfig {
 
-    @Cacheable(value = "contacts", key = "#id")
-    public Contact getContactById(String id) {
-        // This method will cache its result. Subsequent calls with the same id will return the cached value.
-        return fetchContactFromDatabase(id);
+    @Bean
+    public Config hazelcastConfig(EurekaClient eurekaClient) {
+        Config config = new Config();
+
+        // Enable Hazelcast discovery
+        config.getProperties().setProperty("hazelcast.discovery.enabled", "true");
+
+        // Network configuration
+        NetworkConfig networkConfig = config.getNetworkConfig();
+        networkConfig.setPort(5701);
+        networkConfig.setPortAutoIncrement(true);
+
+        // Join configuration
+        JoinConfig joinConfig = networkConfig.getJoin();
+        joinConfig.getMulticastConfig().setEnabled(false);
+        joinConfig.getTcpIpConfig().setEnabled(false);
+
+        // Eureka discovery configuration
+        EurekaOneDiscoveryStrategyFactory.setEurekaClient(eurekaClient);
+        EurekaOneDiscoveryStrategyFactory discoveryStrategyFactory = new EurekaOneDiscoveryStrategyFactory();
+        Map<String, Comparable> properties = new HashMap<>();
+        properties.put("self-registration", "true");
+        properties.put("namespace", "hazelcast");
+        properties.put("use-metadata-for-host-and-port", "true");
+        DiscoveryStrategyConfig discoveryStrategyConfig = new DiscoveryStrategyConfig(discoveryStrategyFactory, properties);
+        joinConfig.getDiscoveryConfig().addDiscoveryStrategyConfig(discoveryStrategyConfig);
+
+        // Group configuration
+        config.setClusterName("prod-cluster");
+
+        // Management Center configuration
+        config.getManagementCenterConfig()
+              .setScriptingEnabled(false)
+              .setConsoleEnabled(false);
+
+        // Security configuration
+        config.getSecurityConfig().setEnabled(true)
+              .setMemberSocketInterceptorConfig(new SocketInterceptorConfig().setEnabled(true))
+              .setClientBlockUnmappedActions(true);
+
+        // Persistence configuration
+        config.getPersistenceConfig().setEnabled(true)
+              .setBaseDir(new File("/hazelcast/persistence"));
+
+        // Performance configurations
+        config.setProperty("hazelcast.operation.thread.count", "16");
+        config.setProperty("hazelcast.io.thread.count", "8");
+        config.setProperty("hazelcast.operation.generic.thread.count", "32");
+
+        // Split-brain protection
+        config.addSplitBrainProtectionConfig(
+            new SplitBrainProtectionConfig("minimum-cluster-size", true, 3)
+        );
+
+        return config;
     }
 
-    @CacheEvict(value = "contacts", key = "#contact.id")
-    public Contact updateContact(Contact contact) {
-        // This method will update the contact and remove the old cached value.
-        Contact updatedContact = updateContactInDatabase(contact);
-        return updatedContact;
+    @Bean
+    public HazelcastInstance hazelcastInstance(Config config) {
+        return Hazelcast.newHazelcastInstance(config);
     }
 
-    @CacheEvict(value = "contacts", allEntries = true)
-    public void clearCache() {
-        // This method will clear all entries in the 'contacts' cache.
-        System.out.println("Clearing entire contacts cache");
-    }
-
-    private Contact fetchContactFromDatabase(String id) {
-        // Simulate database access
-        System.out.println("Fetching contact from database: " + id);
-        try {
-            Thread.sleep(1000); // Simulate slow database query
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-        return new Contact(id, "John Doe", "john@example.com");
-    }
-
-    private Contact updateContactInDatabase(Contact contact) {
-        // Simulate database update
-        System.out.println("Updating contact in database: " + contact.getId());
-        try {
-            Thread.sleep(500); // Simulate database update
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-        return contact; // Return the updated contact
+    @Bean
+    public CacheManager cacheManager(HazelcastInstance hazelcastInstance) {
+        return new HazelcastCacheManager(hazelcastInstance);
     }
 }
