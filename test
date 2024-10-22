@@ -1,21 +1,84 @@
-hazelcast:
-  network:
-    port: 5701
-    port-auto-increment: true
-  join:
-    multicast-enabled: false
-    tcp-ip-enabled: false
-  discovery:
-    eureka:
-      self-registration: true
-      namespace: hazelcast
-      use-metadata-for-host-and-port: true
-  cache:
-    map:
-      name: default
-      max-size: 10000
-      eviction-policy: LRU
-      ttl-seconds: 86400 # 24 hours
-      max-idle-seconds: 3600 # 1 hour
-  security:
-    enabled: true
+```sql
+-- Sample data inserts for mobile_distribution table
+INSERT INTO mobile_distribution (
+    id,
+    publication_id, 
+    contact_id,
+    status,
+    send_after,
+    created_by,
+    created_date,
+    last_modified_by,
+    last_modified_date
+) VALUES (
+    'MD001',
+    'PUB001',
+    'CONT001',
+    'PENDING',
+    SYSTIMESTAMP + INTERVAL '1' HOUR,
+    'SYSTEM',
+    SYSTIMESTAMP,
+    NULL,
+    NULL
+);
+
+INSERT INTO mobile_distribution (
+    id,
+    publication_id,
+    contact_id, 
+    status,
+    send_after,
+    created_by,
+    created_date,
+    last_modified_by,
+    last_modified_date
+) VALUES (
+    'MD002',
+    'PUB002',
+    'CONT002',
+    'PENDING',
+    SYSTIMESTAMP + INTERVAL '2' HOUR, 
+    'SYSTEM',
+    SYSTIMESTAMP,
+    NULL,
+    NULL
+);
+
+INSERT INTO mobile_distribution (
+    id,
+    publication_id,
+    contact_id,
+    status,
+    send_after,
+    created_by,
+    created_date,
+    last_modified_by,
+    last_modified_date
+) VALUES (
+    'MD003', 
+    'PUB003',
+    'CONT003',
+    'SENT',
+    SYSTIMESTAMP + INTERVAL '3' HOUR,
+    'SYSTEM', 
+    SYSTIMESTAMP,
+    NULL,
+    NULL
+);
+
+COMMIT;
+```
+
+This will insert 3 sample records with:
+- Different IDs (MD001, MD002, MD003)
+- Different publication and contact IDs
+- Mix of PENDING and SENT statuses 
+- Staggered send_after times (1, 2, and 3 hours from now)
+- Created by SYSTEM
+- Current timestamp for created_date
+- NULL values for modification fields
+
+You can verify the data with:
+```sql
+SELECT * FROM mobile_distribution ORDER BY send_after;
+```​​​​​​​​​​​​​​​​
