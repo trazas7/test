@@ -19,37 +19,10 @@ class Subscription {
     }
 }
 
-class TopicSubscription {
-    private List<String> topicNames;
-    private List<String> tokenIds;
-
-    public TopicSubscription(List<String> topicNames, List<String> tokenIds) {
-        this.topicNames = topicNames;
-        this.tokenIds = tokenIds;
-    }
-
-    // Getters and toString() for demonstration
-    public List<String> getTopicNames() {
-        return topicNames;
-    }
-
-    public List<String> getTokenIds() {
-        return tokenIds;
-    }
-
-    @Override
-    public String toString() {
-        return "TopicSubscription{" +
-                "topicNames=" + topicNames +
-                ", tokenIds=" + tokenIds +
-                '}';
-    }
-}
-
 public class Main {
     public static void main(String[] args) {
-        // Sample input list
-        List<Subscription> batchSubscription = Arrays.asList(
+        // Assume this data comes from your database
+        List<Subscription> databaseData = Arrays.asList(
                 new Subscription("TopicA", "Token1"),
                 new Subscription("TopicA", "Token2"),
                 new Subscription("TopicB", "Token3"),
@@ -58,22 +31,32 @@ public class Main {
                 new Subscription("TopicC", "Token6")
         );
 
-        // Group by topicName and collect tokenIds
-        Map<String, List<String>> groupedByTopic = batchSubscription.stream()
+        // Step 1: Group data by topic
+        Map<String, List<String>> groupedByTopic = databaseData.stream()
                 .collect(Collectors.groupingBy(
                         Subscription::getTopicName,
                         Collectors.mapping(Subscription::getTokenId, Collectors.toList())
                 ));
 
-        // Create TopicSubscription using the grouped data
-        List<String> topicNames = new ArrayList<>(groupedByTopic.keySet());
-        List<String> tokenIds = groupedByTopic.values().stream()
+        // Step 2: Create a list of all topics
+        List<String> topics = new ArrayList<>(groupedByTopic.keySet());
+
+        // Step 3: Flatten the list of all tokens to unsubscribe
+        List<String> tokens = groupedByTopic.values().stream()
                 .flatMap(Collection::stream)
                 .collect(Collectors.toList());
 
-        TopicSubscription topicSubscription = new TopicSubscription(topicNames, tokenIds);
-
         // Output for demonstration
-        System.out.println(topicSubscription);
+        System.out.println("Topics to Unsubscribe: " + topics);
+        System.out.println("Tokens to Unsubscribe: " + tokens);
+
+        // Step 4: Use Firebase API to unsubscribe (pseudo code)
+        // firebaseUnsubscribe(tokens, topics); // Assuming a function to handle Firebase unsubscribe
+    }
+
+    // Example pseudo-function for Firebase unsubscribe (depends on Firebase SDK)
+    private static void firebaseUnsubscribe(List<String> tokens, List<String> topics) {
+        // Use Firebase SDK to unsubscribe tokens from topics here
+        // This will depend on the Firebase SDK you are using
     }
 }
