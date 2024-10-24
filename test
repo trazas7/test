@@ -1,30 +1,79 @@
-solution:
+import java.util.*;
+import java.util.stream.Collectors;
 
-```java
-@Query("SELECT b FROM BatchSubscription b WHERE b.topicName LIKE 'NCN%' " +
-       "AND (b.createDate IS NULL OR b.createDate >= :dayAgo)")
-List<BatchSubscription> findNCNBatchSubscriptionsLast24Hours(
-    @Param("dayAgo") LocalDateTime dayAgo);
-```
+class Subscription {
+    private String topicName;
+    private String tokenId;
 
-To use this:
+    public Subscription(String topicName, String tokenId) {
+        this.topicName = topicName;
+        this.tokenId = tokenId;
+    }
 
-```java
-@Repository
-public interface BatchSubscriptionRepository extends JpaRepository<BatchSubscription, Long> {
-    @Query("SELECT b FROM BatchSubscription b WHERE b.topicName LIKE 'NCN%' " +
-           "AND (b.createDate IS NULL OR b.createDate >= :dayAgo)")
-    List<BatchSubscription> findNCNBatchSubscriptionsLast24Hours(
-        @Param("dayAgo") LocalDateTime dayAgo);
+    public String getTopicName() {
+        return topicName;
+    }
+
+    public String getTokenId() {
+        return tokenId;
+    }
 }
 
-// In your service:
-LocalDateTime dayAgo = LocalDateTime.now().minusDays(1);
-List<BatchSubscription> subscriptions = repository.findNCNBatchSubscriptionsLast24Hours(dayAgo);
-```
+class TopicSubscription {
+    private List<String> topicNames;
+    private List<String> tokenIds;
 
-Alternatively, you could use method naming convention:
+    public TopicSubscription(List<String> topicNames, List<String> tokenIds) {
+        this.topicNames = topicNames;
+        this.tokenIds = tokenIds;
+    }
 
-```java
-List<BatchSubscription> findByTopicNameStartingWithAndCreateDateIsNullOrCreateDateGreaterThanEqual(
-    String prefix, LocalDateTime dayAgo);
+    // Getters and toString() for demonstration
+    public List<String> getTopicNames() {
+        return topicNames;
+    }
+
+    public List<String> getTokenIds() {
+        return tokenIds;
+    }
+
+    @Override
+    public String toString() {
+        return "TopicSubscription{" +
+                "topicNames=" + topicNames +
+                ", tokenIds=" + tokenIds +
+                '}';
+    }
+}
+
+public class Main {
+    public static void main(String[] args) {
+        // Sample input list
+        List<Subscription> batchSubscription = Arrays.asList(
+                new Subscription("TopicA", "Token1"),
+                new Subscription("TopicA", "Token2"),
+                new Subscription("TopicB", "Token3"),
+                new Subscription("TopicB", "Token4"),
+                new Subscription("TopicA", "Token5"),
+                new Subscription("TopicC", "Token6")
+        );
+
+        // Group by topicName and collect tokenIds
+        Map<String, List<String>> groupedByTopic = batchSubscription.stream()
+                .collect(Collectors.groupingBy(
+                        Subscription::getTopicName,
+                        Collectors.mapping(Subscription::getTokenId, Collectors.toList())
+                ));
+
+        // Create TopicSubscription using the grouped data
+        List<String> topicNames = new ArrayList<>(groupedByTopic.keySet());
+        List<String> tokenIds = groupedByTopic.values().stream()
+                .flatMap(Collection::stream)
+                .collect(Collectors.toList());
+
+        TopicSubscription topicSubscription = new TopicSubscription(topicNames, tokenIds);
+
+        // Output for demonstration
+        System.out.println(topicSubscription);
+    }
+}
