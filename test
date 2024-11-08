@@ -1,12 +1,1 @@
 
-     List<batcheSubscruption> uniqueSubscriptions = new ArrayList<>(
-            subscriptions.stream()
-                .collect(Collectors.toMap(
-                    sub -> sub.getTopic() + "-" + sub.getToken(), // Composite key for uniqueness
-                    sub -> sub, // Value is the object itself
-                    (existing, replacement) -> existing // If duplicate key, keep existing object
-                ))
-                .values()
-        );
-
-        // Now
