@@ -1,62 +1,32 @@
-import java.util.*;
-import java.util.stream.Collectors;
+I'll help break down the existing flow into clear bullet points:
 
-class Subscription {
-    private String topicName;
-    private String tokenId;
+1. User Subscription Flow:
+   - When users change their subscriptions in the system
+   - System synchronizes these changes with Firebase
+   - All subscriptions in EVOIM are maintained in Firebase
 
-    public Subscription(String topicName, String tokenId) {
-        this.topicName = topicName;
-        this.tokenId = tokenId;
-    }
+2. New Publication Flow (from publisher2 or SharePoint):
+   - When a new publication is published
+   - System creates a new row in table FIDATAADM.pub_notif_scheduled
+   - All publications specifically from publisher2 are saved to this same table
+   - All comments that have:
+     * topicId
+     * source = "SALESANDTRADING"
+     * status = "ACTIVE"
+     * Are also saved to FIDATAADM.pub_notif_scheduled
 
-    public String getTopicName() {
-        return topicName;
-    }
+3. Processing Flow:
+   - A scheduler picks up publications from FIDATAADM.pub_notif_scheduled
+   - System excludes two specific types:
+     * Markets 360 Presentations
+     * Data Watch
+   - Notification data must contain:
+     * Publication short link
+     * type = "publication"
 
-    public String getTokenId() {
-        return tokenId;
-    }
-}
+4. Final Step:
+   - System sends notifications to Firebase
+   - Notifications are topic-based
+   - Topics are determined by publication tags
 
-public class Main {
-    public static void main(String[] args) {
-        // Assume this data comes from your database
-        List<Subscription> databaseData = Arrays.asList(
-                new Subscription("TopicA", "Token1"),
-                new Subscription("TopicA", "Token2"),
-                new Subscription("TopicB", "Token3"),
-                new Subscription("TopicB", "Token4"),
-                new Subscription("TopicA", "Token5"),
-                new Subscription("TopicC", "Token6")
-        );
-
-        // Step 1: Group data by topic
-        Map<String, List<String>> groupedByTopic = databaseData.stream()
-                .collect(Collectors.groupingBy(
-                        Subscription::getTopicName,
-                        Collectors.mapping(Subscription::getTokenId, Collectors.toList())
-                ));
-
-        // Step 2: Create a list of all topics
-        List<String> topics = new ArrayList<>(groupedByTopic.keySet());
-
-        // Step 3: Flatten the list of all tokens to unsubscribe
-        List<String> tokens = groupedByTopic.values().stream()
-                .flatMap(Collection::stream)
-                .collect(Collectors.toList());
-
-        // Output for demonstration
-        System.out.println("Topics to Unsubscribe: " + topics);
-        System.out.println("Tokens to Unsubscribe: " + tokens);
-
-        // Step 4: Use Firebase API to unsubscribe (pseudo code)
-        // firebaseUnsubscribe(tokens, topics); // Assuming a function to handle Firebase unsubscribe
-    }
-
-    // Example pseudo-function for Firebase unsubscribe (depends on Firebase SDK)
-    private static void firebaseUnsubscribe(List<String> tokens, List<String> topics) {
-        // Use Firebase SDK to unsubscribe tokens from topics here
-        // This will depend on the Firebase SDK you are using
-    }
-}
+Would you like me to expand on any of these points or organize them differently?​​​​​​​​​​​​​​​​
