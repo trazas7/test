@@ -1,1 +1,53 @@
 
+import java.util.*;
+
+public class Main {
+    public static void main(String[] args) {
+        // Sample list of batcheSubscruption objects
+        List<batcheSubscruption> subscriptions = Arrays.asList(
+            new batcheSubscruption("topic1", "tokenA"),
+            new batcheSubscruption("topic1", "tokenA"), // duplicate
+            new batcheSubscruption("topic2", "tokenB")
+        );
+
+        // Use a Set to remove duplicates
+        Set<batcheSubscruption> uniqueSubscriptions = new HashSet<>(subscriptions);
+
+        // Convert Set back to List if needed
+        List<batcheSubscruption> result = new ArrayList<>(uniqueSubscriptions);
+
+        // Now you can saveAll(result) as needed
+    }
+
+    static class batcheSubscruption {
+        private String topic;
+        private String token;
+
+        public batcheSubscruption(String topic, String token) {
+            this.topic = topic;
+            this.token = token;
+        }
+
+        public String getTopic() {
+            return topic;
+        }
+
+        public String getToken() {
+            return token;
+        }
+
+        // Override equals and hashCode based on topic and token
+        @Override
+        public boolean equals(Object obj) {
+            if (this == obj) return true;
+            if (obj == null || getClass() != obj.getClass()) return false;
+            batcheSubscruption that = (batcheSubscruption) obj;
+            return Objects.equals(topic, that.topic) && Objects.equals(token, that.token);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(topic, token);
+        }
+    }
+}
