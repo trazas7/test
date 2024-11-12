@@ -4,7 +4,7 @@ WITH publication_info AS (
         ptav.attribute_value AS publication_type,
         COALESCE(lower(ph_language.tag_value), 'english') AS language,
         CASE 
-            WHEN ph_us_debt.tag_value = 'US Debt' THEN 'US Debt'
+            WHEN ph_us_debt.tag_value IS NOT NULL THEN 'US Debt'
             ELSE 'N'
         END AS us_debt_status
     FROM 
@@ -24,9 +24,12 @@ WITH publication_info AS (
             AND tt_language.column_name = 'bnpp_language'
     LEFT JOIN fidataadm.publication_has_tag_value ph_us_debt 
         ON ph_us_debt.publication_id = pub.id
-        INNER JOIN fidataadm.tag_type tt_us_debt 
-            ON tt_us_debt.id = ph_us_debt.tag_type_id 
+        AND EXISTS (
+            SELECT 1 
+            FROM fidataadm.tag_type tt_us_debt 
+            WHERE tt_us_debt.id = ph_us_debt.tag_type_id 
             AND tt_us_debt.name = 'US_Debt'
+        )
     WHERE 
         pub.id = 'YOUR_PUBLICATION_ID'  -- Replace with specific publication_id
 )
