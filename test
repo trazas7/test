@@ -1,46 +1,54 @@
 
-```sql
-SELECT rrp.page_code 
-FROM FIDATAADM.RIXML_RECEIVER_PAGE RRP
-INNER JOIN FIDATAADM.PUB_TYPE_ATTRIBUTE_VALUE PTAV ON PTAV.ID=RRP.PUBLICATION_TYPE_CATEGORY_ID
-INNER JOIN FIDATAADM.PUBLICATION_TYPE_ATTRIBUTE PTA ON PTA.PUBTYPE_ATTR_VAL_ID=PTAV.ID
-INNER JOIN FIDATAADM.PUBLICATION_TYPE PT ON PT.ID=PTA.PUBLICATION_TYPE_ID
-INNER JOIN FIDATAADM.PUBLICATION PUB ON PUB.PUBLICATION_TYPE_ID=PT.ID
-```
-
-To introduce the US Debt requirement, we need to make the following changes:
-
-1. Add a new column `IS_US_DEBT` to the PUBLICATION table to identify US Debt content.
-2. Update the query to include a check for the `IS_US_DEBT` column.
-3. Modify the CASE statement in the SELECT clause to handle the different Bloomberg class assignments based on US Debt vs non-US Debt content.
-
-Here's the updated query:
-
-```sql
-SELECT rrp.page_code,
-       CASE
-           WHEN PTAV.ATTRIBUTE_VALUE = 'Credit' AND PUB.IS_US_DEBT = 'Y' THEN
-               CASE LOWER(COALESCE(phtv.tvalue, 'english'))
-                   WHEN 'english' THEN 4  -- US Debt Credit 360 English
-                   WHEN 'french' THEN 13 -- US Debt Credit 360 French
-               END
-           ELSE
-               CASE LOWER(COALESCE(phtv.tvalue, 'english'))
-                   WHEN 'english' THEN 1  -- Markets 360 & non-US Debt Credit 360
-                   WHEN 'chinese' THEN 2  -- Chinese content
-                   WHEN 'japanese' THEN 3 -- Japanese content
-                   WHEN 'french' THEN 12 -- French Markets 360
-               END
-       END as bbg_class
-FROM FIDATAADM.RIXML_RECEIVER_PAGE RRP
-INNER JOIN FIDATAADM.PUB_TYPE_ATTRIBUTE_VALUE PTAV ON PTAV.ID=RRP.PUBLICATION_TYPE_CATEGORY_ID
-INNER JOIN FIDATAADM.PUBLICATION_TYPE PT ON PT.ID=PTAV.PUBLICATION_TYPE_ID
-INNER JOIN FIDATAADM.PUBLICATION PUB ON PUB.PUBLICATION_TYPE_ID=PT.ID
-LEFT JOIN (
-    SELECT PH.ID ID, PH.PUBLICATION_ID PHTV_PUB_ID, PH.TAG_VALUE TVALUE
-    FROM FIDATAADM.PUBLICATION_HAS_TAG_VALUE PH
-    INNER JOIN FIDATAADM.TAG_TYPE TT
-    ON TT.ID=PH.TAG_TYPE_ID AND TT.COLUMN_NAME='bnpp_language'
-) PHTV ON PHTV.PHTV_PUB_ID=PUB.ID
-WHERE PUB.ID='377933';
-```
+SELECT 
+    rrp.page_code,
+    CASE 
+        WHEN ptav.attribute_value = 'Credit' AND debt_tag.tag_value = 'Y' THEN
+            CASE 
+                WHEN lower(lang_tag.tag_value) = 'english' OR lang_tag.tag_value IS NULL THEN 4
+                WHEN lower(lang_tag.tag_value) = 'chinese' THEN 2
+                WHEN lower(lang_tag.tag_value) = 'japanese' THEN 3
+                WHEN lower(lang_tag.tag_value) = 'french' THEN 12
+                ELSE NULL
+            END
+        WHEN ptav.attribute_value = 'Credit' AND (debt_tag.tag_value IS NULL OR debt_tag.tag_value = 'N') THEN
+            CASE 
+                WHEN lower(lang_tag.tag_value) = 'english' OR lang_tag.tag_value IS NULL THEN 1
+                WHEN lower(lang_tag.tag_value) = 'chinese' THEN 2
+                WHEN lower(lang_tag.tag_value) = 'japanese' THEN 3
+                WHEN lower(lang_tag.tag_value) = 'french' THEN 12
+                ELSE NULL
+            END
+        WHEN ptav.attribute_value = 'Market360' THEN
+            CASE 
+                WHEN lower(lang_tag.tag_value) = 'english' OR lang_tag.tag_value IS NULL THEN 1
+                WHEN lower(lang_tag.tag_value) = 'chinese' THEN 2
+                WHEN lower(lang_tag.tag_value) = 'japanese' THEN 3
+                WHEN lower(lang_tag.tag_value) = 'french' THEN 12
+                ELSE NULL
+            END
+        ELSE NULL
+    END AS bbg_class
+FROM 
+    fidataadm.rixml_receiver_page rrp
+INNER JOIN fidataadm.pub_type_attribute_value ptav ON ptav.id = rrp.publication_type_category_id
+INNER JOIN fidataadm.publication_type_attribute pta ON pta.pubtype_attr_val_id = ptav.id
+INNER JOIN fidataadm.publication_type pt ON pt.id = pta.publication_type_id
+INNER JOIN fidataadm.publication pub ON pub.publication_type_id = pt.id
+LEFT JOIN fidataadm.publication_has_tag_value lang_tag 
+    ON lang_tag.publication_id = pub.id 
+    AND EXISTS (
+        SELECT 1 
+        FROM fidataadm.tag_type tt 
+        WHERE tt.id = lang_tag.tag_type_id 
+        AND tt.name = 'Language'
+    )
+LEFT JOIN fidataadm.publication_has_tag_value debt_tag 
+    ON debt_tag.publication_id = pub.id 
+    AND EXISTS (
+        SELECT 1 
+        FROM fidataadm.tag_type tt 
+        WHERE tt.id = debt_tag.tag_type_id 
+        AND tt.name = 'US_Debt'
+    )
+WHERE 
+    pub.id = '377933';
