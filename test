@@ -9,15 +9,19 @@ WITH publication_info AS (
         END AS us_debt_status
     FROM 
         fidataadm.rixml_receiver_page rrp
+    INNER JOIN fidataadm.publication pub 
+        ON pub.id = rrp.publication_id
+    INNER JOIN fidataadm.publication_type pt 
+        ON pt.id = pub.publication_type_id
     INNER JOIN fidataadm.pub_type_attribute_value ptav 
-        ON ptav.id = rrp.publication_type_category_id
+        ON ptav.id = pt.publication_type_id -- Joining to determine if it's Credit or Market360
     LEFT JOIN fidataadm.publication_has_tag_value us_debt_tag 
-        ON us_debt_tag.publication_id = rrp.id
+        ON us_debt_tag.publication_id = pub.id
         INNER JOIN fidataadm.tag_type tt_us_debt 
             ON tt_us_debt.id = us_debt_tag.tag_type_id 
             AND tt_us_debt.name = 'US_Debt'
     WHERE 
-        rrp.id = 'YOUR_PUBLICATION_ID'  -- Replace with specific publication_id
+        pub.id = 'YOUR_PUBLICATION_ID'  -- Replace with the specific publication_id
 )
 SELECT 
     page_code,
