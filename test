@@ -34,7 +34,10 @@ WITH publication_info AS (
         pub.id = 'YOUR_PUBLICATION_ID'  -- Replace with specific publication_id
 )
 SELECT 
-    page_code,
+    page_code
+FROM 
+    publication_info
+WHERE
     CASE 
         WHEN publication_type = 'Market360' AND us_debt_status = 'N' THEN
             CASE 
@@ -55,6 +58,5 @@ SELECT
                 ELSE NULL
             END
         ELSE NULL
-    END AS bbg_class
-FROM 
-    publication_info;
+    END IS NOT NULL
+LIMIT 1;
