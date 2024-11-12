@@ -1,66 +1,44 @@
 WITH publication_info AS (
     SELECT 
-        rrp.page_code,
         ptav.attribute_value AS publication_type,
         COALESCE(lower(ph_language.tag_value), 'english') AS language,
         CASE 
-            WHEN ph_us_debt.tag_value IS NOT NULL THEN 'US Debt'
+            WHEN EXISTS (
+                SELECT 1 
+                FROM fidataadm.publication_has_tag_value ph_us_debt
+                INNER JOIN fidataadm.tag_type tt_us_debt
+                    ON tt_us_debt.id = ph_us_debt.tag_type_id
+                WHERE ph_us_debt.publication_id = pub.id 
+                AND tt_us_debt.name = 'US_Debt'
+            ) THEN 'Y'
             ELSE 'N'
-        END AS us_debt_status
+        END AS is_us_debt
     FROM 
-        fidataadm.rixml_receiver_page rrp
-    INNER JOIN fidataadm.pub_type_attribute_value ptav 
-        ON ptav.id = rrp.publication_type_category_id
-    INNER JOIN fidataadm.publication_type_attribute pta 
-        ON pta.pubtype_attr_val_id = ptav.id
+        fidataadm.publication pub
     INNER JOIN fidataadm.publication_type pt 
-        ON pt.id = pta.publication_type_id
-    INNER JOIN fidataadm.publication pub 
         ON pub.publication_type_id = pt.id
+    INNER JOIN fidataadm.publication_type_attribute pta 
+        ON pta.publication_type_id = pt.id
+    INNER JOIN fidataadm.pub_type_attribute_value ptav 
+        ON ptav.id = pta.pubtype_attr_val_id
     LEFT JOIN fidataadm.publication_has_tag_value ph_language 
         ON ph_language.publication_id = pub.id
         INNER JOIN fidataadm.tag_type tt_language 
             ON tt_language.id = ph_language.tag_type_id 
             AND tt_language.column_name = 'bnpp_language'
-    LEFT JOIN fidataadm.publication_has_tag_value ph_us_debt 
-        ON ph_us_debt.publication_id = pub.id
-        AND EXISTS (
-            SELECT 1 
-            FROM fidataadm.tag_type tt_us_debt 
-            WHERE tt_us_debt.id = ph_us_debt.tag_type_id 
-            AND tt_us_debt.name = 'US_Debt'
-        )
     WHERE 
         pub.id = 'YOUR_PUBLICATION_ID'  -- Replace with specific publication_id
 )
 SELECT 
-    page_code
+    rrp.page_code
 FROM 
     publication_info
-WHERE
-    CASE 
-        WHEN publication_type = 'Credit' AND us_debt_status = 'N' THEN
-            CASE 
-                WHEN language = 'english' OR language = 'no language' THEN page_code = 1
-                WHEN language = 'chinese' THEN page_code = 2
-                WHEN language = 'japanese' THEN page_code = 3
-                WHEN language = 'french' THEN page_code = 12
-                ELSE NULL
-            END
-        WHEN publication_type = 'Credit' AND us_debt_status = 'US Debt' THEN
-            CASE 
-                WHEN language = 'english' OR language = 'no language' THEN page_code = 4
-                WHEN language = 'french' THEN page_code = 13
-                ELSE NULL
-            END
-        WHEN publication_type = 'Market360' THEN
-            CASE 
-                WHEN language = 'english' OR language = 'no language' THEN page_code = 1
-                WHEN language = 'chinese' THEN page_code = 2
-                WHEN language = 'japanese' THEN page_code = 3
-                WHEN language = 'french' THEN page_code = 12
-                ELSE NULL
-            END
-        ELSE NULL
-    END IS NOT NULL
+INNER JOIN fidataadm.rixml_receiver_page rrp 
+    ON rrp.publication_type_category_id = (
+        SELECT ptav.id
+        FROM fidataadm.pub_type_attribute_value ptav
+        WHERE ptav.attribute_value = publication_info.publication_type
+    )
+    AND rrp.language = publication_info.language
+    AND rrp.is_for_us_debt = publication_info.is_us_debt
 LIMIT 1;
