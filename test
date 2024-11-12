@@ -1,11 +1,6 @@
-
 SELECT 
     rrp.page_code,
-    COALESCE(lower(language_tag.tag_value), 'english') AS language,
-    CASE 
-        WHEN us_debt_tag.tag_value = 'US Debt' THEN 'US Debt'
-        ELSE 'N'
-    END AS us_debt_flag
+    rrp.bbg_class
 FROM 
     fidataadm.rixml_receiver_page rrp
 INNER JOIN fidataadm.publication pub ON pub.id = rrp.publication_id
@@ -20,4 +15,7 @@ LEFT JOIN fidataadm.publication_has_tag_value us_debt_tag
         ON tt_us_debt.id = us_debt_tag.tag_type_id 
         AND tt_us_debt.name = 'US_Debt'
 WHERE 
-    pub.id = 'YOUR_PUBLICATION_ID';
+    rrp.publication_type = 'Credit' 
+    AND (lower(language_tag.tag_value) = 'english' OR language_tag.tag_value IS NULL)
+    AND (us_debt_tag.tag_value = 'US Debt' OR us_debt_tag.tag_value IS NULL)
+    AND pub.id = 'YOUR_PUBLICATION_ID';
