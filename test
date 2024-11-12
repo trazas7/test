@@ -1,53 +1,46 @@
 
-import java.util.*;
+```sql
+SELECT rrp.page_code 
+FROM FIDATAADM.RIXML_RECEIVER_PAGE RRP
+INNER JOIN FIDATAADM.PUB_TYPE_ATTRIBUTE_VALUE PTAV ON PTAV.ID=RRP.PUBLICATION_TYPE_CATEGORY_ID
+INNER JOIN FIDATAADM.PUBLICATION_TYPE_ATTRIBUTE PTA ON PTA.PUBTYPE_ATTR_VAL_ID=PTAV.ID
+INNER JOIN FIDATAADM.PUBLICATION_TYPE PT ON PT.ID=PTA.PUBLICATION_TYPE_ID
+INNER JOIN FIDATAADM.PUBLICATION PUB ON PUB.PUBLICATION_TYPE_ID=PT.ID
+```
 
-public class Main {
-    public static void main(String[] args) {
-        // Sample list of batcheSubscruption objects
-        List<batcheSubscruption> subscriptions = Arrays.asList(
-            new batcheSubscruption("topic1", "tokenA"),
-            new batcheSubscruption("topic1", "tokenA"), // duplicate
-            new batcheSubscruption("topic2", "tokenB")
-        );
+To introduce the US Debt requirement, we need to make the following changes:
 
-        // Use a Set to remove duplicates
-        Set<batcheSubscruption> uniqueSubscriptions = new HashSet<>(subscriptions);
+1. Add a new column `IS_US_DEBT` to the PUBLICATION table to identify US Debt content.
+2. Update the query to include a check for the `IS_US_DEBT` column.
+3. Modify the CASE statement in the SELECT clause to handle the different Bloomberg class assignments based on US Debt vs non-US Debt content.
 
-        // Convert Set back to List if needed
-        List<batcheSubscruption> result = new ArrayList<>(uniqueSubscriptions);
+Here's the updated query:
 
-        // Now you can saveAll(result) as needed
-    }
-
-    static class batcheSubscruption {
-        private String topic;
-        private String token;
-
-        public batcheSubscruption(String topic, String token) {
-            this.topic = topic;
-            this.token = token;
-        }
-
-        public String getTopic() {
-            return topic;
-        }
-
-        public String getToken() {
-            return token;
-        }
-
-        // Override equals and hashCode based on topic and token
-        @Override
-        public boolean equals(Object obj) {
-            if (this == obj) return true;
-            if (obj == null || getClass() != obj.getClass()) return false;
-            batcheSubscruption that = (batcheSubscruption) obj;
-            return Objects.equals(topic, that.topic) && Objects.equals(token, that.token);
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(topic, token);
-        }
-    }
-}
+```sql
+SELECT rrp.page_code,
+       CASE
+           WHEN PTAV.ATTRIBUTE_VALUE = 'Credit' AND PUB.IS_US_DEBT = 'Y' THEN
+               CASE LOWER(COALESCE(phtv.tvalue, 'english'))
+                   WHEN 'english' THEN 4  -- US Debt Credit 360 English
+                   WHEN 'french' THEN 13 -- US Debt Credit 360 French
+               END
+           ELSE
+               CASE LOWER(COALESCE(phtv.tvalue, 'english'))
+                   WHEN 'english' THEN 1  -- Markets 360 & non-US Debt Credit 360
+                   WHEN 'chinese' THEN 2  -- Chinese content
+                   WHEN 'japanese' THEN 3 -- Japanese content
+                   WHEN 'french' THEN 12 -- French Markets 360
+               END
+       END as bbg_class
+FROM FIDATAADM.RIXML_RECEIVER_PAGE RRP
+INNER JOIN FIDATAADM.PUB_TYPE_ATTRIBUTE_VALUE PTAV ON PTAV.ID=RRP.PUBLICATION_TYPE_CATEGORY_ID
+INNER JOIN FIDATAADM.PUBLICATION_TYPE PT ON PT.ID=PTAV.PUBLICATION_TYPE_ID
+INNER JOIN FIDATAADM.PUBLICATION PUB ON PUB.PUBLICATION_TYPE_ID=PT.ID
+LEFT JOIN (
+    SELECT PH.ID ID, PH.PUBLICATION_ID PHTV_PUB_ID, PH.TAG_VALUE TVALUE
+    FROM FIDATAADM.PUBLICATION_HAS_TAG_VALUE PH
+    INNER JOIN FIDATAADM.TAG_TYPE TT
+    ON TT.ID=PH.TAG_TYPE_ID AND TT.COLUMN_NAME='bnpp_language'
+) PHTV ON PHTV.PHTV_PUB_ID=PUB.ID
+WHERE PUB.ID='377933';
+```
