@@ -39,22 +39,26 @@ FROM
     publication_info
 WHERE
     CASE 
-        WHEN publication_type = 'Market360' AND us_debt_status = 'N' THEN
+        WHEN publication_type = 'Credit' AND us_debt_status = 'N' THEN
             CASE 
-                WHEN language = 'english' THEN 1
-                WHEN language = 'chinese' THEN 2
-                WHEN language = 'japanese' THEN 3
-                WHEN language = 'french' THEN 12
+                WHEN language = 'english' OR language = 'no language' THEN page_code = 1
+                WHEN language = 'chinese' THEN page_code = 2
+                WHEN language = 'japanese' THEN page_code = 3
+                WHEN language = 'french' THEN page_code = 12
                 ELSE NULL
             END
         WHEN publication_type = 'Credit' AND us_debt_status = 'US Debt' THEN
             CASE 
-                WHEN language = 'english' THEN 4
+                WHEN language = 'english' OR language = 'no language' THEN page_code = 4
+                WHEN language = 'french' THEN page_code = 13
                 ELSE NULL
             END
-        WHEN publication_type = 'Credit' AND us_debt_status = 'N' THEN
+        WHEN publication_type = 'Market360' THEN
             CASE 
-                WHEN language = 'french' THEN 13
+                WHEN language = 'english' OR language = 'no language' THEN page_code = 1
+                WHEN language = 'chinese' THEN page_code = 2
+                WHEN language = 'japanese' THEN page_code = 3
+                WHEN language = 'french' THEN page_code = 12
                 ELSE NULL
             END
         ELSE NULL
