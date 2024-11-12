@@ -2,7 +2,7 @@ WITH publication_info AS (
     SELECT 
         rrp.page_code,
         ptav.attribute_value AS publication_type,
-        COALESCE(lower(language_tag.tag_value), 'english') AS language,
+        COALESCE(lower(rrp.publication_language), 'english') AS language,
         CASE 
             WHEN us_debt_tag.tag_value = 'US Debt' THEN 'US Debt'
             ELSE 'N'
@@ -10,24 +10,19 @@ WITH publication_info AS (
     FROM 
         fidataadm.rixml_receiver_page rrp
     INNER JOIN fidataadm.pub_type_attribute_value ptav 
-        ON ptav.id = rrp.publication_type_id
-    LEFT JOIN fidataadm.publication_has_tag_value language_tag 
-        ON language_tag.publication_id = rrp.publication_id
-        INNER JOIN fidataadm.tag_type tt_language 
-            ON tt_language.id = language_tag.tag_type_id 
-            AND tt_language.column_name = 'bnpp_language'
+        ON ptav.id = rrp.publication_type_category_id
     LEFT JOIN fidataadm.publication_has_tag_value us_debt_tag 
-        ON us_debt_tag.publication_id = rrp.publication_id
+        ON us_debt_tag.publication_id = rrp.id
         INNER JOIN fidataadm.tag_type tt_us_debt 
             ON tt_us_debt.id = us_debt_tag.tag_type_id 
             AND tt_us_debt.name = 'US_Debt'
     WHERE 
-        rrp.publication_id = 'YOUR_PUBLICATION_ID'  -- Replace with specific publication_id
+        rrp.id = 'YOUR_PUBLICATION_ID'  -- Replace with specific publication_id
 )
 SELECT 
     page_code,
     CASE 
-        WHEN publication_type = 'All Markets 360' AND us_debt_status = 'N' THEN
+        WHEN publication_type = 'Market360' AND us_debt_status = 'N' THEN
             CASE 
                 WHEN language = 'english' THEN 1
                 WHEN language = 'chinese' THEN 2
@@ -35,15 +30,15 @@ SELECT
                 WHEN language = 'french' THEN 12
                 ELSE NULL
             END
-        WHEN publication_type = 'All Credit 360' AND us_debt_status = 'US Debt' THEN
+        WHEN publication_type = 'Credit' AND us_debt_status = 'US Debt' THEN
             CASE 
                 WHEN language = 'english' THEN 4
-                ELSE NULL  -- For All Credit 360 with US Debt, only English is listed
+                ELSE NULL
             END
-        WHEN publication_type = 'All Credit 360' AND us_debt_status = 'N' THEN
+        WHEN publication_type = 'Credit' AND us_debt_status = 'N' THEN
             CASE 
                 WHEN language = 'french' THEN 13
-                ELSE NULL  -- For All Credit 360 without US Debt, only French is listed
+                ELSE NULL
             END
         ELSE NULL
     END AS bbg_class
