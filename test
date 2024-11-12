@@ -1,30 +1,33 @@
 WITH publication_info AS (
     SELECT 
-        rrp.page_code,
+        pub.id AS publication_id,
         ptav.attribute_value AS publication_type,
-        COALESCE(lower(rrp.publication_language), 'english') AS language,
+        COALESCE(lower(ph_language.tag_value), 'english') AS language,
         CASE 
-            WHEN us_debt_tag.tag_value = 'US Debt' THEN 'US Debt'
+            WHEN ph_us_debt.tag_value = 'US Debt' THEN 'US Debt'
             ELSE 'N'
         END AS us_debt_status
     FROM 
-        fidataadm.rixml_receiver_page rrp
-    INNER JOIN fidataadm.publication pub 
-        ON pub.id = rrp.publication_id
+        fidataadm.publication pub
     INNER JOIN fidataadm.publication_type pt 
         ON pt.id = pub.publication_type_id
     INNER JOIN fidataadm.pub_type_attribute_value ptav 
-        ON ptav.id = pt.publication_type_id -- Joining to determine if it's Credit or Market360
-    LEFT JOIN fidataadm.publication_has_tag_value us_debt_tag 
-        ON us_debt_tag.publication_id = pub.id
+        ON ptav.id = pt.publication_type_id  -- Determines if it's Credit or Market360
+    LEFT JOIN fidataadm.publication_has_tag_value ph_language 
+        ON ph_language.publication_id = pub.id
+        INNER JOIN fidataadm.tag_type tt_language 
+            ON tt_language.id = ph_language.tag_type_id 
+            AND tt_language.column_name = 'bnpp_language'
+    LEFT JOIN fidataadm.publication_has_tag_value ph_us_debt 
+        ON ph_us_debt.publication_id = pub.id
         INNER JOIN fidataadm.tag_type tt_us_debt 
-            ON tt_us_debt.id = us_debt_tag.tag_type_id 
+            ON tt_us_debt.id = ph_us_debt.tag_type_id 
             AND tt_us_debt.name = 'US_Debt'
     WHERE 
-        pub.id = 'YOUR_PUBLICATION_ID'  -- Replace with the specific publication_id
+        pub.id = 'YOUR_PUBLICATION_ID'  -- Replace with specific publication_id
 )
 SELECT 
-    page_code,
+    rrp.page_code,
     CASE 
         WHEN publication_type = 'Market360' AND us_debt_status = 'N' THEN
             CASE 
@@ -47,4 +50,9 @@ SELECT
         ELSE NULL
     END AS bbg_class
 FROM 
-    publication_info;
+    publication_info
+INNER JOIN fidataadm.rixml_receiver_page rrp 
+    ON rrp.publication_type_category_id = (
+        SELECT id FROM fidataadm.pub_type_attribute_value 
+        WHERE attribute_value = publication_info.publication_type
+    );
