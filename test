@@ -72,3 +72,8 @@ WHERE page_code IN (4, 13);
 -- Rollback script to remove `is_us_debt` column
 ALTER TABLE fidataadm.rixml_receiver_page
 DROP COLUMN is_us_debt;
+
+ALTER TABLE fidataadm.rixml_receiver_page
+ADD is_us_debt VARCHAR2(1) DEFAULT 'N' NOT NULL;
+
+
