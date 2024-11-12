@@ -1,20 +1,49 @@
 SELECT 
-    rrp.page_code
+    rrp.page_code,
+    CASE 
+        WHEN ptav.attribute_value = 'Credit' AND us_debt_tag.tag_value = 'US Debt' THEN
+            CASE 
+                WHEN lower(COALESCE(phtv.tvalue, 'english')) = 'english' THEN 4
+                WHEN lower(COALESCE(phtv.tvalue, 'english')) = 'chinese' THEN 2
+                WHEN lower(COALESCE(phtv.tvalue, 'english')) = 'japanese' THEN 3
+                WHEN lower(COALESCE(phtv.tvalue, 'english')) = 'french' THEN 12
+                ELSE NULL
+            END
+        WHEN ptav.attribute_value = 'Credit' AND (us_debt_tag.tag_value IS NULL OR us_debt_tag.tag_value != 'US Debt') THEN
+            CASE 
+                WHEN lower(COALESCE(phtv.tvalue, 'english')) = 'english' THEN 1
+                WHEN lower(COALESCE(phtv.tvalue, 'english')) = 'chinese' THEN 2
+                WHEN lower(COALESCE(phtv.tvalue, 'english')) = 'japanese' THEN 3
+                WHEN lower(COALESCE(phtv.tvalue, 'english')) = 'french' THEN 12
+                ELSE NULL
+            END
+        -- Add similar logic for Market360 if needed
+        ELSE NULL
+    END AS bbg_class
 FROM 
     fidataadm.rixml_receiver_page rrp
-INNER JOIN fidataadm.pub_type_attribute_value ptav 
-    ON ptav.id = rrp.publication_type_id
-LEFT JOIN fidataadm.publication_has_tag_value language_tag 
-    ON language_tag.publication_id = rrp.publication_id
-    INNER JOIN fidataadm.tag_type tt_language 
-        ON tt_language.id = language_tag.tag_type_id 
-        AND tt_language.column_name = 'bnpp_language'
-LEFT JOIN fidataadm.publication_has_tag_value us_debt_tag 
-    ON us_debt_tag.publication_id = rrp.publication_id
-    INNER JOIN fidataadm.tag_type tt_us_debt 
-        ON tt_us_debt.id = us_debt_tag.tag_type_id 
-        AND tt_us_debt.name = 'US_Debt'
+INNER JOIN fidataadm.pub_type_attribute_value ptav ON ptav.id = rrp.publication_type_category_id
+INNER JOIN fidataadm.publication_type_attribute pta ON pta.pubtype_attr_val_id = ptav.id
+INNER JOIN fidataadm.publication_type pt ON pt.id = pta.publication_type_id
+INNER JOIN fidataadm.publication pub ON pub.publication_type_id = pt.id
+LEFT JOIN (
+    SELECT 
+        ph.id,
+        ph.publication_id AS phtv_pub_id,
+        ph.tag_value AS tvalue
+    FROM 
+        fidataadm.publication_has_tag_value ph
+    INNER JOIN fidataadm.tag_type tt ON tt.id = ph.tag_type_id
+        AND tt.column_name = 'bnpp_language'
+) phtv ON phtv.phtv_pub_id = pub.id
+LEFT JOIN (
+    SELECT 
+        ph.publication_id,
+        ph.tag_value
+    FROM 
+        fidataadm.publication_has_tag_value ph
+    INNER JOIN fidataadm.tag_type tt ON tt.id = ph.tag_type_id
+        AND tt.name = 'US_Debt'
+) us_debt_tag ON us_debt_tag.publication_id = pub.id
 WHERE 
-    ptav.attribute_value = 'Credit'
-    AND (us_debt_tag.tag_value IS NULL OR us_debt_tag.tag_value != 'US Debt')
-    AND (lower(language_tag.tag_value) = 'english' OR language_tag.tag_value IS NULL);
+    pub.id = 'YOUR_PUBLICATION_ID';  -- Replace with the actual publication ID
