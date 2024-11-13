@@ -1,79 +1,21 @@
--- Update `page_class` and `display_name` based on new values
-UPDATE fidataadm.rixml_receiver_page
-SET page_class = 'BNP Paribas Markets 360 and Credit 360 - excl US Debt research (English)',
-    display_name = 'BNP Paribas Markets 360 and Credit 360 - excl US Debt research (English)'
-WHERE page_class = 'Strategy & Economics (English)';
+import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
-UPDATE fidataadm.rixml_receiver_page
-SET page_class = 'BNP Paribas Markets 360 and Credit 360 - excl US Debt research (Chinese)',
-    display_name = 'BNP Paribas Markets 360 and Credit 360 - excl US Debt research (Chinese)'
-WHERE page_class = 'Strategy & Economics (Chinese)';
+public class Main {
+    public static boolean checkTopics(List<String> topicIds, List<TopicDto> topicDtoList) {
+        // Convert topicIds to a set for fast lookup
+        Set<String> topicIdSet = topicIds.stream().collect(Collectors.toSet());
 
-UPDATE fidataadm.rixml_receiver_page
-SET page_class = 'BNP Paribas Markets 360 and Credit 360 - excl US Debt research (Japanese)',
-    display_name = 'BNP Paribas Markets 360 and Credit 360 - excl US Debt research (Japanese)'
-WHERE page_class = 'Strategy & Economics (Japanese)';
-
-UPDATE fidataadm.rixml_receiver_page
-SET page_class = 'BNP Paribas Credit 360 - US debt research only',
-    display_name = 'BNP Paribas Credit 360 - US debt research only'
-WHERE page_class = 'Credit Trading Desk Analyst Commentary';
-
-UPDATE fidataadm.rixml_receiver_page
-SET page_class = 'BNP Paribas Markets 360 and Credit 360 - excl US Debt research (French)',
-    display_name = 'BNP Paribas Markets 360 and Credit 360 - excl US Debt research (French)'
-WHERE page_class = 'Markets 360 (French)';
-
-UPDATE fidataadm.rixml_receiver_page
-SET page_class = 'Credit Trading Commentary (French)',
-    display_name = 'Credit Trading Commentary (French)'
-WHERE page_class = 'Credit Trading Commentary (French)';
-
-
--- Rollback script to revert `page_class` and `display_name` values
-
-UPDATE fidataadm.rixml_receiver_page
-SET page_class = 'Strategy & Economics (English)',
-    display_name = 'Strategy & Economics (English)'
-WHERE page_class = 'BNP Paribas Markets 360 and Credit 360 - excl US Debt research (English)';
-
-UPDATE fidataadm.rixml_receiver_page
-SET page_class = 'Strategy & Economics (Chinese)',
-    display_name = 'Strategy & Economics (Chinese)'
-WHERE page_class = 'BNP Paribas Markets 360 and Credit 360 - excl US Debt research (Chinese)';
-
-UPDATE fidataadm.rixml_receiver_page
-SET page_class = 'Strategy & Economics (Japanese)',
-    display_name = 'Strategy & Economics (Japanese)'
-WHERE page_class = 'BNP Paribas Markets 360 and Credit 360 - excl US Debt research (Japanese)';
-
-UPDATE fidataadm.rixml_receiver_page
-SET page_class = 'Credit Trading Desk Analyst Commentary',
-    display_name = 'Credit Trading Desk Analyst Commentary'
-WHERE page_class = 'BNP Paribas Credit 360 - US debt research only';
-
-UPDATE fidataadm.rixml_receiver_page
-SET page_class = 'Markets 360 (French)',
-    display_name = 'Markets 360 (French)'
-WHERE page_class = 'BNP Paribas Markets 360 and Credit 360 - excl US Debt research (French)';
-
-UPDATE fidataadm.rixml_receiver_page
-SET page_class = 'Credit Trading Commentary (French)',
-    display_name = 'Credit Trading Commentary (French)'
-WHERE page_class = 'Credit Trading Commentary (French)';
-
-
--- Update `is_us_debt` column to 'Y' for US Debt-related entries
-UPDATE fidataadm.rixml_receiver_page
-SET is_us_debt = 'Y'
-WHERE page_code IN (4, 13);
-
-
--- Rollback script to remove `is_us_debt` column
-ALTER TABLE fidataadm.rixml_receiver_page
-DROP COLUMN is_us_debt;
-
-ALTER TABLE fidataadm.rixml_receiver_page
-ADD is_us_debt VARCHAR2(1) DEFAULT 'N' NOT NULL;
-
-
+        // Check if all topicIds have a corresponding TopicDto that meets the criteria
+        return topicIdSet.stream().allMatch(topicId ->
+            topicDtoList.stream()
+                .anyMatch(dto ->
+                    dto.getId().equals(topicId) &&
+                    "sales and trading".equals(dto.getSource()) &&
+                    "active".equals(dto.getStatus()) &&
+                    "both".equals(dto.getVisibility())
+                )
+        );
+    }
+}
