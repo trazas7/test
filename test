@@ -1,21 +1,9 @@
-import java.util.List;
-import java.util.Set;
-import java.util.stream.Collectors;
-
-public class Main {
-    public static boolean checkTopics(List<String> topicIds, List<TopicDto> topicDtoList) {
-        // Convert topicIds to a set for fast lookup
-        Set<String> topicIdSet = topicIds.stream().collect(Collectors.toSet());
-
-        // Check if all topicIds have a corresponding TopicDto that meets the criteria
-        return topicIdSet.stream().allMatch(topicId ->
-            topicDtoList.stream()
-                .anyMatch(dto ->
-                    dto.getId().equals(topicId) &&
-                    "sales and trading".equals(dto.getSource()) &&
-                    "active".equals(dto.getStatus()) &&
-                    "both".equals(dto.getVisibility())
-                )
-        );
-    }
-}
+DELETE FROM FIDATAADM.RIXML_RECEIVER_PAGE
+WHERE PAGE_CODE = '1'
+  AND PAGE_CLASS = 'BNP Paribas Markets 360 and Credit 360 - excl US Debt research (English)'
+  AND DISPLAY_NAME = 'BNP Paribas Markets 360 and Credit 360 - excl US Debt research (English)'
+  AND RECEIVER_ID = (SELECT ID FROM FIDATAADM.RIXML_RECEIVERS WHERE NAME='BLOOMBERG' AND IS_ACTIVE='Y')
+  AND IS_ACTIVE = 'Y'
+  AND PUBLICATION_TYPE_CATEGORY_ID = (SELECT ID FROM FIDATAADM.PUBLICATION_TYPE_ATTRIBUTE_VALUE WHERE ATTRIBUTE_NAME='pub_type_category' AND ATTRIBUTE_VALUE='Credit')
+  AND PUBLICATION_LANGUAGE = 'English'
+  AND IS_US_DEBT = 'N';
