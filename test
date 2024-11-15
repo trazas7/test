@@ -10,20 +10,9 @@ WITH publication_info AS (
                     ON tt_us_debt.id = ph_us_debt.tag_type_id
                 WHERE ph_us_debt.publication_id = pub.id 
                 AND tt_us_debt.name = 'US_Debt'
-            ) THEN 'US Debt'
-            ELSE 'N'
-        END AS us_debt_status,
-        CASE 
-            WHEN EXISTS (
-                SELECT 1 
-                FROM fidataadm.pub_has_asset_class phac
-                INNER JOIN fidataadm.asset_class ac
-                    ON phac.asset_class_id = ac.id
-                WHERE phac.publication_id = pub.id 
-                AND ac.name = 'Convertible Bonds'
-            ) THEN 'Convertible Bonds'
-            ELSE ptav.attribute_value
-        END AS final_publication_type
+            ) THEN 'Y' ELSE 'N'
+        END AS is_us_debt,
+        ac.name AS asset_class
     FROM 
         fidataadm.publication pub
     INNER JOIN fidataadm.publication_type pt 
@@ -34,46 +23,14 @@ WITH publication_info AS (
         ON ptav.id = pta.pubtype_attr_val_id
     LEFT JOIN fidataadm.publication_has_tag_value ph_language 
         ON ph_language.publication_id = pub.id
-        INNER JOIN fidataadm.tag_type tt_language 
-            ON tt_language.id = ph_language.tag_type_id 
-            AND tt_language.column_name = 'bnpp_language'
+    INNER JOIN fidataadm.tag_type tt_language 
+        ON tt_language.id = ph_language.tag_type_id 
+        AND tt_language.column_name = 'bnpp_language'
+    LEFT JOIN fidataadm.pub_has_asset_class phac 
+        ON phac.publication_id = pub.id
+    LEFT JOIN fidataadm.asset_class ac 
+        ON phac.asset_class_id = ac.id
     WHERE 
-        pub.id = 'YOUR_PUBLICATION_ID'  -- Replace with specific publication_id
+        pub.id = '377885' -- Replace with specific publication_id as needed
 )
-SELECT 
-    rrp.page_code
-FROM 
-    publication_info
-INNER JOIN fidataadm.rixml_receiver_page rrp 
-    ON rrp.publication_type_category_id = (
-        SELECT ptav.id
-        FROM fidataadm.pub_type_attribute_value ptav
-        WHERE ptav.attribute_value = publication_info.final_publication_type
-    )
-    AND rrp.language = publication_info.language
-WHERE
-    -- Non-US Debt Credit 360 publications
-    (publication_info.final_publication_type = 'Credit' AND publication_info.us_debt_status = 'N' AND
-        ((publication_info.language = 'english' AND rrp.page_code = 1) OR
-         (publication_info.language = 'chinese' AND rrp.page_code = 2) OR
-         (publication_info.language = 'japanese' AND rrp.page_code = 3) OR
-         (publication_info.language = 'french' AND rrp.page_code = 12))
-    ) OR
-    -- US Debt Credit 360 publications
-    (publication_info.final_publication_type = 'Credit' AND publication_info.us_debt_status = 'US Debt' AND
-        ((publication_info.language = 'english' AND rrp.page_code = 4) OR
-         (publication_info.language = 'french' AND rrp.page_code = 13))
-    ) OR
-    -- Market360 publications
-    (publication_info.final_publication_type = 'Market360' AND
-        ((publication_info.language = 'english' AND rrp.page_code = 1) OR
-         (publication_info.language = 'chinese' AND rrp.page_code = 2) OR
-         (publication_info.language = 'japanese' AND rrp.page_code = 3) OR
-         (publication_info.language = 'french' AND rrp.page_code = 12))
-    ) OR
-    -- Convertible Bonds publications
-    (publication_info.final_publication_type = 'Convertible Bonds' AND
-        ((publication_info.language = 'english' AND rrp.page_code = 14) OR
-         (publication_info.language = 'french' AND rrp.page_code = 15))
-    )
-LIMIT 1;
+SELECT * FROM publication_info;
