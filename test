@@ -1,9 +1,79 @@
-DELETE FROM FIDATAADM.RIXML_RECEIVER_PAGE
-WHERE PAGE_CODE = '1'
-  AND PAGE_CLASS = 'BNP Paribas Markets 360 and Credit 360 - excl US Debt research (English)'
-  AND DISPLAY_NAME = 'BNP Paribas Markets 360 and Credit 360 - excl US Debt research (English)'
-  AND RECEIVER_ID = (SELECT ID FROM FIDATAADM.RIXML_RECEIVERS WHERE NAME='BLOOMBERG' AND IS_ACTIVE='Y')
-  AND IS_ACTIVE = 'Y'
-  AND PUBLICATION_TYPE_CATEGORY_ID = (SELECT ID FROM FIDATAADM.PUBLICATION_TYPE_ATTRIBUTE_VALUE WHERE ATTRIBUTE_NAME='pub_type_category' AND ATTRIBUTE_VALUE='Credit')
-  AND PUBLICATION_LANGUAGE = 'English'
-  AND IS_US_DEBT = 'N';
+WITH publication_info AS (
+    SELECT 
+        ptav.attribute_value AS publication_type,
+        COALESCE(lower(ph_language.tag_value), 'english') AS language,
+        CASE 
+            WHEN EXISTS (
+                SELECT 1 
+                FROM fidataadm.publication_has_tag_value ph_us_debt
+                INNER JOIN fidataadm.tag_type tt_us_debt
+                    ON tt_us_debt.id = ph_us_debt.tag_type_id
+                WHERE ph_us_debt.publication_id = pub.id 
+                AND tt_us_debt.name = 'US_Debt'
+            ) THEN 'US Debt'
+            ELSE 'N'
+        END AS us_debt_status,
+        CASE 
+            WHEN EXISTS (
+                SELECT 1 
+                FROM fidataadm.pub_has_asset_class phac
+                INNER JOIN fidataadm.asset_class ac
+                    ON phac.asset_class_id = ac.id
+                WHERE phac.publication_id = pub.id 
+                AND ac.name = 'Convertible Bonds'
+            ) THEN 'Convertible Bonds'
+            ELSE ptav.attribute_value
+        END AS final_publication_type
+    FROM 
+        fidataadm.publication pub
+    INNER JOIN fidataadm.publication_type pt 
+        ON pub.publication_type_id = pt.id
+    INNER JOIN fidataadm.publication_type_attribute pta 
+        ON pta.publication_type_id = pt.id
+    INNER JOIN fidataadm.pub_type_attribute_value ptav 
+        ON ptav.id = pta.pubtype_attr_val_id
+    LEFT JOIN fidataadm.publication_has_tag_value ph_language 
+        ON ph_language.publication_id = pub.id
+        INNER JOIN fidataadm.tag_type tt_language 
+            ON tt_language.id = ph_language.tag_type_id 
+            AND tt_language.column_name = 'bnpp_language'
+    WHERE 
+        pub.id = 'YOUR_PUBLICATION_ID'  -- Replace with specific publication_id
+)
+SELECT 
+    rrp.page_code
+FROM 
+    publication_info
+INNER JOIN fidataadm.rixml_receiver_page rrp 
+    ON rrp.publication_type_category_id = (
+        SELECT ptav.id
+        FROM fidataadm.pub_type_attribute_value ptav
+        WHERE ptav.attribute_value = publication_info.final_publication_type
+    )
+    AND rrp.language = publication_info.language
+WHERE
+    -- Non-US Debt Credit 360 publications
+    (publication_info.final_publication_type = 'Credit' AND publication_info.us_debt_status = 'N' AND
+        ((publication_info.language = 'english' AND rrp.page_code = 1) OR
+         (publication_info.language = 'chinese' AND rrp.page_code = 2) OR
+         (publication_info.language = 'japanese' AND rrp.page_code = 3) OR
+         (publication_info.language = 'french' AND rrp.page_code = 12))
+    ) OR
+    -- US Debt Credit 360 publications
+    (publication_info.final_publication_type = 'Credit' AND publication_info.us_debt_status = 'US Debt' AND
+        ((publication_info.language = 'english' AND rrp.page_code = 4) OR
+         (publication_info.language = 'french' AND rrp.page_code = 13))
+    ) OR
+    -- Market360 publications
+    (publication_info.final_publication_type = 'Market360' AND
+        ((publication_info.language = 'english' AND rrp.page_code = 1) OR
+         (publication_info.language = 'chinese' AND rrp.page_code = 2) OR
+         (publication_info.language = 'japanese' AND rrp.page_code = 3) OR
+         (publication_info.language = 'french' AND rrp.page_code = 12))
+    ) OR
+    -- Convertible Bonds publications
+    (publication_info.final_publication_type = 'Convertible Bonds' AND
+        ((publication_info.language = 'english' AND rrp.page_code = 14) OR
+         (publication_info.language = 'french' AND rrp.page_code = 15))
+    )
+LIMIT 1;
