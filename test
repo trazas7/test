@@ -1,61 +1,23 @@
-public void downloadSPFileAndPutOnNAS(final String fileName, final String touchHash) {
-    if (StringUtils.isBlank(fileName) || StringUtils.isBlank(touchHash)) {
-        throw new IllegalArgumentException("fileName and touchHash must not be blank");
-    }
-    
-    log.info("-> downloadSPFileAndPutOnNAS: fileName: {} and hash: {}", fileName, touchHash);
-    byte[] fileContent = null;
-    int maxRetries = 3;
-    int currentRetry = 0;
-    
-    while (currentRetry < maxRetries) {
-        try {
-            log.info("Downloading file from SharePoint -> {}", fileName);
-            fileContent = getDownloadedSPFileContent(fileName);
-            log.info("<- Downloading file from SharePoint {}", fileName);
-            break;
-        } catch (TimeoutException tex) {
-            currentRetry++;
-            if (currentRetry == maxRetries) {
-                String errorMsg = String.format("Service call timeout after %d retries while downloading file from SharePoint: %s", maxRetries, fileName);
-                log.error(errorMsg, tex);
-                throw new RuntimeException(errorMsg, tex);
-            }
-            long waitTime = Math.min(1000L * (long) Math.pow(2, currentRetry), 8000L); // exponential backoff with max 8 seconds
-            try {
-                Thread.sleep(waitTime);
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-                throw new RuntimeException("Interrupted while waiting to retry download", ie);
-            }
-            log.info("Retry {} of {} after timeout downloading file {}", currentRetry, maxRetries, fileName);
-        } catch (Exception ex) {
-            log.error("Error downloading file: {} - {}", fileName, ex.getMessage(), ex);
-            throw new RuntimeException("Error downloading file: " + fileName, ex);
-        }
-    }
-    
-    if (fileContent == null || fileContent.length == 0) {
-        throw new RuntimeException("Downloaded file content is empty for file: " + fileName);
-    }
-    
-    File targetFile = new File(nasUnprocessedFilePath + touchHash);
-    try {
-        log.info("-> Writing file with size {} to the NAS unprocessed file path {}", 
-                fileContent.length, nasUnprocessedFilePath + touchHash);
-                
-        try (FileOutputStream fos = new FileOutputStream(targetFile)) {
-            fos.write(fileContent);
-            fos.flush();
-        }
-        
-        log.info("<- Writing file to NAS unprocessed file path");
-    } catch (IOException ioe) {
-        String errorMsg = String.format("Error creating file %s at NAS drive %s", 
-                fileName, nasUnprocessedFilePath + touchHash);
-        log.error(errorMsg, ioe);
-        throw new RuntimeException(errorMsg, ioe);
-    }
-    
-    log.info("<- downloadSPFileAndPutOnNAS");
-}
+SELECT
+    ptav.attribute_value AS publication_type,
+    coalesce(lower(ph_language.tag_value), 'english') AS language,
+    coalesce(lower(ph_asset_class.tag_value), 'default_asset_class') AS asset_class,
+    CASE
+        WHEN EXISTS (
+            SELECT 1
+            FROM fidataadm.publication_has_tag_value ph_us_debt
+            INNER JOIN fidataadm.tag_type tt_us_debt ON tt_us_debt.id = ph_us_debt.tag_type_id
+            WHERE ph_us_debt.publication_id = pub.id AND tt_us_debt.name = 'US_Debt'
+        ) THEN 'Y' ELSE 'N'
+    END AS is_us_debt
+FROM
+    fidataadm.publication pub
+INNER JOIN fidataadm.publication_type pt ON pub.publication_type_id = pt.id
+INNER JOIN fidataadm.publication_type_attribute pta ON pta.publication_type_id = pt.id
+INNER JOIN fidataadm.publication_type_attribute_value ptav ON ptav.id = pta.pubtype_attr_val_id AND ptav.attribute_name = 'pub_type_category'
+LEFT JOIN fidataadm.publication_has_tag_value ph_language ON ph_language.publication_id = pub.id
+INNER JOIN fidataadm.tag_type tt_language ON tt_language.id = ph_language.tag_type_id AND tt_language.column_name = 'bnpp_language'
+LEFT JOIN fidataadm.publication_has_tag_value ph_asset_class ON ph_asset_class.publication_id = pub.id
+INNER JOIN fidataadm.tag_type tt_asset_class ON tt_asset_class.id = ph_asset_class.tag_type_id AND tt_asset_class.column_name = 'bnpp_asset_class'
+WHERE
+    pub.id = 378023;
