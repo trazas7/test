@@ -1,28 +1,20 @@
 
-SELECT DISTINCT rrp.page_code
-FROM fidataadm.rixml_receiver_page rrp
-INNER JOIN publication_info pi 
-    ON rrp.publication_type_category_id = (
-        SELECT ptav.id
-        FROM fidataadm.pub_type_attribute_value ptav
-        WHERE ptav.attribute_value = pi.publication_type
-    )
-WHERE LOWER(rrp.publication_language) = pi.language
-  AND rrp.is_us_debt = pi.is_us_debt
-  AND (
-      (rrp.additional_package IS NOT NULL AND 
-       LOWER(rrp.additional_package) IN (
-           SELECT asset_class
-           FROM publication_info
-           WHERE publication_id = pi.publication_id
-       )
-      ) 
-      OR rrp.additional_package IS NULL
-  )
-ORDER BY 
-    CASE 
-        WHEN rrp.additional_package IS NOT NULL THEN 1
-        WHEN rrp.additional_package IS NULL THEN 2
-        ELSE 3
-    END
-FETCH FIRST 1 ROW ONLY;
+private static QueryBuilder filterQuery(Set<String> tags, String... fields) {
+    BoolQueryBuilder queryBuilder = boolQuery();
+
+    for (String field : fields) {
+        // Add inclusion logic for all tags
+        tags.forEach(tag -> queryBuilder.should(termQuery(field + ".keyword", tag))); // Include matching tags
+    }
+
+    // Add dynamic exclusion logic for cases where only one asset class exists from the tags set
+    tags.forEach(tag -> {
+        queryBuilder.mustNot(
+            QueryBuilders.boolQuery()
+                .must(termQuery("bnpp_asset_class.keyword", tag)) // Must contain the tag
+                .mustNot(existsQuery("bnpp_asset_class[1]")) // Ensure no additional asset classes
+        );
+    });
+
+    return queryBuilder;
+}
