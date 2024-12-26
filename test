@@ -9,9 +9,7 @@ private static QueryBuilder filterQuery(Set<String> tags, String field) {
     BoolQueryBuilder queryBuilder = boolQuery();
     tags.forEach(tag -> 
         queryBuilder.should(
-            boolQuery()
-                .must(termQuery(field, tag))
-                .must(regexpQuery(field, ".*,.*"))
+            termQuery(field + ".keyword", tag)  // Use keyword field for exact match
         )
     );
     return queryBuilder;
