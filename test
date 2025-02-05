@@ -3,23 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Disclaimer Page</title>
+    <title>Disclaimer</title>
     <style>
         /* Page Styling */
         body {
             font-family: Arial, sans-serif;
             text-align: center;
             margin: 20px;
-        }
-
-        /* Disclaimer Container */
-        #disclaimerContainer {
-            display: block;
-            width: 80%;
-            height: 400px;
-            border: 1px solid black;
-            box-shadow: 0px 0px 10px gray;
-            margin: 20px auto;
         }
 
         /* Close Button */
@@ -36,18 +26,25 @@
 </head>
 <body>
 
-    <h1>Welcome to Our Website</h1>
-    <p>You must read and accept the disclaimer before proceeding.</p>
+    <h1>Disclaimer</h1>
+    <p>
+        This website provides information for general purposes only. By continuing, you agree that we are not responsible for any decisions made based on this information.
+    </p>
 
-    <!-- Embedded Disclaimer -->
-    <iframe id="disclaimerContainer" src="disclaimer.html"></iframe>
+    <p>Read more details <a href="https://www.example.com" target="_blank">here</a>.</p>
 
     <!-- Close Button -->
-    <button class="btn" onclick="closeDisclaimer()">Close</button>
+    <button class="btn" onclick="closePage()">Close</button>
 
     <script>
-        function closeDisclaimer() {
-            document.getElementById("disclaimerContainer").style.display = "none";
+        function closePage() {
+            if (window.opener) {
+                // If the page was opened via window.open(), close it
+                window.close();
+            } else {
+                // If opened manually, hide the content instead
+                document.body.innerHTML = "<h2>Thank you!</h2>";
+            }
         }
     </script>
 
