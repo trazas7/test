@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Disclaimer Page</title>
+    <style>
+        /* Page Styling */
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin: 20px;
+        }
+
+        /* Modal Styling */
+        #disclaimerModal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal-content {
+            background: white;
+            padding: 20px;
+            border-radius: 5px;
+            width: 60%;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.3);
+        }
+
+        .modal-content h2 {
+            margin-top: 0;
+        }
+
+        .modal-footer {
+            margin-top: 20px;
+            text-align: right;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            margin: 10px;
+            border: none;
+            cursor: pointer;
+            font-size: 16px;
+        }
+
+        .btn-primary {
+            background: #007bff;
+            color: white;
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Welcome to Our Website</h1>
+    <p>Please read and accept the disclaimer before proceeding.</p>
+    
+    <button class="btn btn-primary" onclick="showDisclaimer()">Read Disclaimer</button>
+
+    <!-- Disclaimer Modal -->
+    <div id="disclaimerModal">
+        <div class="modal-content">
+            <h2>Disclaimer</h2>
+            <p>
+                This website provides information for general purposes only. By continuing, you agree that we are not responsible for any decisions made based on the information provided.
+            </p>
+            <p>
+                If you do not accept these terms, please close this page.
+            </p>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="hideDisclaimer()">Close</button>
+                <button class="btn btn-primary" onclick="acceptDisclaimer()">Accept</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function showDisclaimer() {
+            document.getElementById("disclaimerModal").style.display = "flex";
+        }
+
+        function hideDisclaimer() {
+            document.getElementById("disclaimerModal").style.display = "none";
+        }
+
+        function acceptDisclaimer() {
+            alert("Thank you for accepting the disclaimer!");
+            hideDisclaimer();
+        }
+    </script>
+
+</body>
+</html>
