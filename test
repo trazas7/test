@@ -31,21 +31,38 @@
         This website provides information for general purposes only. By continuing, you agree that we are not responsible for any decisions made based on this information.
     </p>
 
-    <p>Read more details <a href="https://www.example.com" target="_blank">here</a>.</p>
+    <p>
+        Read more details 
+        <a href="https://www.example.com" target="_blank" onclick="openNewTab(event)">here</a>.
+    </p>
 
     <!-- Close Button -->
     <button class="btn" onclick="closePage()">Close</button>
 
     <script>
+        // Open links in a new tab to prevent navigation issues
+        function openNewTab(event) {
+            event.preventDefault();  // Stop the default behavior
+            window.open(event.target.href, "_blank"); // Open link in a new tab
+        }
+
+        // Close the page or hide it if blocked
         function closePage() {
             if (window.opener) {
-                // If the page was opened via window.open(), close it
+                // If opened via window.open(), close it
                 window.close();
             } else {
-                // If opened manually, hide the content instead
-                document.body.innerHTML = "<h2>Thank you!</h2>";
+                // If opened manually, hide content instead
+                document.body.innerHTML = ""; // Make the page appear closed
             }
         }
+
+        // If the user navigated away and comes back, reload the page
+        window.addEventListener("pageshow", function (event) {
+            if (event.persisted) {
+                location.reload();
+            }
+        });
     </script>
 
 </body>
