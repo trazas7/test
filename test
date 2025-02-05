@@ -21,7 +21,7 @@
         }
     </style>
 </head>
-<body id="pageContent">
+<body>
 
     <h1>Disclaimer</h1>
     <p>
@@ -30,35 +30,27 @@
 
     <p>
         Read more details 
-        <a href="https://www.example.com" target="_blank" onclick="openNewTab(event)">here</a>.
+        <a href="https://www.example.com" onclick="openNewTab(event)">here</a>.
     </p>
 
     <!-- Close Button -->
     <button class="btn" onclick="closePage()">Close</button>
 
     <script>
-        // If page is inside an iframe, force it to open in a new tab
-        if (window.self !== window.top) {
-            window.open(window.location.href, "_blank");
-            window.top.location.href = "about:blank";
-        }
-
-        // Open links in a new tab to prevent navigation issues
         function openNewTab(event) {
-            event.preventDefault();  
-            window.open(event.target.href, "_blank");
+            event.preventDefault(); // Stop the default navigation
+            window.open(event.target.href, "_blank"); // Open link in a new tab
         }
 
-        // Close the page or go back if blocked
         function closePage() {
             if (window.opener) {
-                window.close();
+                window.close(); // Close works if opened via script
             } else {
-                window.history.back(); // Fallback if close is blocked
+                document.body.style.display = "none"; // Hide content as a fallback
             }
         }
 
-        // Reload if user navigates back (ensures close button keeps working)
+        // Reload if user navigates away and returns (ensures close button keeps working)
         window.addEventListener("pageshow", function (event) {
             if (event.persisted) {
                 location.reload();
