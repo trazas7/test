@@ -1,62 +1,78 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Disclaimer</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            text-align: center;
-            margin: 20px;
-        }
-        .btn {
-            padding: 10px 20px;
-            margin-top: 10px;
-            border: none;
-            cursor: pointer;
-            font-size: 16px;
-            background: #007bff;
-            color: white;
-        }
-    </style>
-</head>
-<body>
+This regex prevents unsafe characters, spaces, and multiple dots:
 
-    <h1>Disclaimer</h1>
-    <p>
-        This website provides information for general purposes only. By continuing, you agree that we are not responsible for any decisions made based on this information.
-    </p>
+^(?!.*\.\.)[a-zA-Z0-9._-]{1,255}$
 
-    <p>
-        Read more details 
-        <a href="https://www.example.com" onclick="openNewTab(event)">here</a>.
-    </p>
+🔒 What This Fixes
 
-    <!-- Close Button -->
-    <button class="btn" onclick="closePage()">Close</button>
+✅ No special characters (/ \ : * ? " < > |)
+✅ Prevents double dots (..) to stop directory traversal attacks
+✅ Restricts length (adjust {1,255} as needed)
+✅ Allows only safe characters (a-z, A-Z, 0-9, _, -, .)
+✅ Doesn’t allow spaces or hidden characters
 
-    <script>
-        function openNewTab(event) {
-            event.preventDefault(); // Stop the default navigation
-            window.open(event.target.href, "_blank"); // Open link in a new tab
+
+import org.apache.commons.lang3.StringUtils;
+import java.util.Arrays;
+import java.util.List;
+import java.util.regex.Pattern;
+
+public class FileValidator {
+    
+    // Allowed file extensions (Modify as needed)
+    private static final List<String> ALLOWED_FILE_TYPES = Arrays.asList("jpg", "png", "txt", "pdf", "docx");
+
+    // Secure file name regex (Prevents special characters and double dots)
+    private static final String SAFE_FILENAME_REGEX = "^(?!.*\\.\\.)([a-zA-Z0-9._-]{1,255})$";
+
+    // Maximum allowed file name length
+    private static final int MAX_FILENAME_LENGTH = 255;
+
+    /**
+     * Validates a file name securely.
+     * @param fileName The name of the file to validate.
+     * @return true if the file name is valid, false otherwise.
+     */
+    public static boolean isValidFileName(String fileName) {
+        // 1. Ensure file name is not blank
+        if (StringUtils.isBlank(fileName)) {
+            return false;
         }
 
-        function closePage() {
-            if (window.opener) {
-                window.close(); // Close works if opened via script
-            } else {
-                document.body.style.display = "none"; // Hide content as a fallback
-            }
+        // 2. Validate against regex to ensure safe characters
+        if (!Pattern.matches(SAFE_FILENAME_REGEX, fileName)) {
+            return false;
         }
 
-        // Reload if user navigates away and returns (ensures close button keeps working)
-        window.addEventListener("pageshow", function (event) {
-            if (event.persisted) {
-                location.reload();
-            }
-        });
-    </script>
+        // 3. Prevent double extensions (e.g., "malware.txt.exe")
+        String[] nameParts = fileName.split("\\.");
+        if (nameParts.length > 2) {  // More than one dot
+            return false;
+        }
 
-</body>
-</html>
+        // 4. Extract the file extension
+        String fileExtension = nameParts[nameParts.length - 1].toLowerCase();
+
+        // 5. Check if the extension is in the allowed list
+        if (!ALLOWED_FILE_TYPES.contains(fileExtension)) {
+            return false;
+        }
+
+        // 6. Ensure filename length is within limits
+        if (fileName.length() > MAX_FILENAME_LENGTH) {
+            return false;
+        }
+
+        return true; // If all checks pass, the filename is valid
+    }
+
+    // Test cases
+    public static void main(String[] args) {
+        System.out.println(isValidFileName("document.pdf"));     // ✅ True
+        System.out.println(isValidFileName("image.png"));       // ✅ True
+        System.out.println(isValidFileName("bad<script>.txt")); // ❌ False (Invalid characters)
+        System.out.println(isValidFileName("malware.txt.exe")); // ❌ False (Double extension)
+        System.out.println(isValidFileName("../secret.pdf"));   // ❌ False (Directory traversal attempt)
+        System.out.println(isValidFileName(" "));               // ❌ False (Blank name)
+        System.out.println(isValidFileName("safe-file_name.docx")); // ✅ True
+    }
+}
