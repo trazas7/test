@@ -1,16 +1,22 @@
-@Configuration
-@EnableWebSecurity
-public class SecurityConfig extends WebSecurityConfigurerAdapter {
+<beans:beans xmlns="http://www.springframework.org/schema/security"
+             xmlns:beans="http://www.springframework.org/schema/beans"
+             xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+             xsi:schemaLocation="http://www.springframework.org/schema/security
+                                 http://www.springframework.org/schema/security/spring-security.xsd
+                                 http://www.springframework.org/schema/beans
+                                 http://www.springframework.org/schema/beans/spring-beans.xsd">
 
-    @Override
-    protected void configure(HttpSecurity http) throws Exception {
-        http
-            .csrf().csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse())  // ✅ Enable CSRF
-            .and()
-            .authorizeRequests()
-            .antMatchers("/public/**").permitAll()  // Allow public endpoints
-            .anyRequest().authenticated()  // Require authentication for all other requests
-            .and()
-            .logout().logoutUrl("/logout").logoutSuccessUrl("/sso-logout"); // Redirect to SSO logout
-    }
-}
+    <http auto-config="true" use-expressions="true">
+        <!-- ✅ Allow all requests -->
+        <intercept-url pattern="/**" access="permitAll"/>
+        
+        <!-- ✅ Keep CSRF enabled -->
+        <csrf/>
+    </http>
+
+</beans:beans>
+
+<context-param>
+    <param-name>contextConfigLocation</param-name>
+    <param-value>/WEB-INF/security.xml</param-value>
+</context-param>
