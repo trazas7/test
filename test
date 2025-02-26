@@ -1,0 +1,16 @@
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig extends WebSecurityConfigurerAdapter {
+
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+        http
+            .csrf().csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse())  // ✅ Enable CSRF
+            .and()
+            .authorizeRequests()
+            .antMatchers("/public/**").permitAll()  // Allow public endpoints
+            .anyRequest().authenticated()  // Require authentication for all other requests
+            .and()
+            .logout().logoutUrl("/logout").logoutSuccessUrl("/sso-logout"); // Redirect to SSO logout
+    }
+}
