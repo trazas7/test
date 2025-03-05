@@ -1,4 +1,4 @@
-this.showTradeIdeasPopup = function() {
+this.showTradeIdeasPopup = function(callback) {
     var div = $("<div> If you are opening or closing a new trade idea, please update the M360 Trade tracker. </div>");
 
     div.dialog({
@@ -17,9 +17,24 @@ this.showTradeIdeasPopup = function() {
                 text: "OK",
                 click: function () {
                     div.dialog("close");
-                    window.open(encodeURI(tradeIdeaHomePageUrl), "_blank"); // Open the page
+                    window.open(encodeURI(tradeIdeaHomePageUrl), "_blank"); // Open the trade idea page
+                    if (callback) callback(); // Execute the callback after closing the dialog
                 }
             }
         ]
     });
 };
+
+if (self.publicationTypeName() == 'Trade Ideas') {
+    self.showTradeIdeasPopup(function() {
+        // This will run only AFTER the popup is closed
+        self.msg('Document saved', "success");
+        window.location = "/publisher2/publications"; // Redirect user
+    });
+} else {
+    self.msg('Document saved', "success");
+    window.location = "/publisher2/publications";
+}
+
+
+
