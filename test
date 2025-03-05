@@ -7,28 +7,22 @@
                http://www.springframework.org/schema/beans
                http://www.springframework.org/schema/beans/spring-beans.xsd">
 
-    <!-- Optionally ignore certain static assets -->
-    <http pattern="/resources/**" security="none"/>
-    
-    <!-- The main filter chain applies to everything else -->
-    <http auto-config="false" use-expressions="false" create-session="never">
-        <!-- Let every request pass (SSO handles auth). No role checks. -->
+    <!-- A single <http> block that covers all paths -->
+    <http auto-config="false" create-session="never">
+        <!-- Permit everything (SSO is external) -->
         <intercept-url pattern="/**" access="permitAll" />
 
-        <!-- Enable CSRF protection -->
-        <csrf/>
-
-        <!-- Disable unneeded Spring Security features -->
+        <!-- Disable typical Spring Security features -->
         <form-login disable="true"/>
-        <http-basic entry-point-ref="noOpEntryPoint"/>
-        <anonymous enabled="false"/>
+        <http-basic entry-point-ref="forbiddenEntryPoint" />
+        <anonymous enabled="false" />
         <headers disabled="true"/>
 
-        <!-- If a request somehow gets challenged, return 403 instead of a login flow -->
-        <custom-filter position="FORM_LOGIN_FILTER" ref="noOpEntryPoint"/>
+        <!-- Comment out or remove <csrf> for now -->
+        <!-- <csrf/> -->
     </http>
 
-    <!-- No-op entry point just sends a 403 Forbidden if triggered -->
-    <beans:bean id="noOpEntryPoint"
+    <!-- If anything tries to trigger an auth challenge, we just return 403. -->
+    <beans:bean id="forbiddenEntryPoint"
         class="org.springframework.security.web.authentication.Http403ForbiddenEntryPoint"/>
 </beans:beans>
