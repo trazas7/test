@@ -1,40 +1,14 @@
-this.showTradeIdeasPopup = function(callback) {
-    var div = $("<div> If you are opening or closing a new trade idea, please update the M360 Trade tracker. </div>");
+<beans:beans xmlns="http://www.springframework.org/schema/security"
+             xmlns:beans="http://www.springframework.org/schema/beans"
+             xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+             xsi:schemaLocation="http://www.springframework.org/schema/security
+             http://www.springframework.org/schema/security/spring-security-4.2.xsd
+             http://www.springframework.org/schema/beans
+             http://www.springframework.org/schema/beans/spring-beans.xsd">
 
-    div.dialog({
-        title: "Trade Idea Update",
-        width: 450,
-        draggable: false,
-        closeOnEscape: false,
-        modal: true,
-        resizable: false,
-        position: { my: "center", at: "center", of: window },
-        open: function(event, ui) {
-            $(".ui-dialog-titlebar-close", ui.dialog | ui).hide(); // Hide close button
-        },
-        buttons: [
-            {
-                text: "OK",
-                click: function () {
-                    div.dialog("close");
-                    window.open(encodeURI(tradeIdeaHomePageUrl), "_blank"); // Open the trade idea page
-                    if (callback) callback(); // Execute the callback after closing the dialog
-                }
-            }
-        ]
-    });
-};
+    <http pattern="/***" security="none">
+        <csrf disabled="false"/>
+    </http>
 
-if (self.publicationTypeName() == 'Trade Ideas') {
-    self.showTradeIdeasPopup(function() {
-        // This will run only AFTER the popup is closed
-        self.msg('Document saved', "success");
-        window.location = "/publisher2/publications"; // Redirect user
-    });
-} else {
-    self.msg('Document saved', "success");
-    window.location = "/publisher2/publications";
-}
-
-
-
+    <authentication-manager/>
+</beans:beans>
