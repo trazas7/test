@@ -7,22 +7,20 @@
                http://www.springframework.org/schema/beans
                http://www.springframework.org/schema/beans/spring-beans.xsd">
 
-    <!-- A single <http> block that covers all paths -->
-    <http auto-config="false" create-session="never">
-        <!-- Permit everything (SSO is external) -->
+    <!-- 1) A minimal AuthenticationManager with no real users or auth providers -->
+    <authentication-manager/>
+
+    <!-- 2) A single <http> block that covers everything -->
+    <http auto-config="false" use-expressions="false" create-session="never">
+
+        <!-- 3) Permit all requests (no role checks) -->
         <intercept-url pattern="/**" access="permitAll" />
 
-        <!-- Disable typical Spring Security features -->
-        <form-login disable="true"/>
-        <http-basic entry-point-ref="forbiddenEntryPoint" />
-        <anonymous enabled="false" />
-        <headers disabled="true"/>
+        <!-- 4) Enable anonymous so that Spring Security is satisfied with 
+               "anonymousUser" instead of forcing real auth. -->
+        <anonymous enabled="true"/>
 
-        <!-- Comment out or remove <csrf> for now -->
-        <!-- <csrf/> -->
+        <!-- 5) No <csrf>, no <form-login>, no <http-basic>, no <headers> -->
     </http>
 
-    <!-- If anything tries to trigger an auth challenge, we just return 403. -->
-    <beans:bean id="forbiddenEntryPoint"
-        class="org.springframework.security.web.authentication.Http403ForbiddenEntryPoint"/>
 </beans:beans>
