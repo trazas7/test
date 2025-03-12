@@ -1,18 +1,1 @@
 
-private UserReadershipDTO toUserReadershipDTO(ElasticReadership entity) {
-    return new UserReadershipDTO(
-        entity.getMarketingClientName(),
-        entity.getMarketingClientId(),
-        entity.getContactFullName(),
-        entity.getContactEmail(),
-        entity.getPublicationId(),
-        entity.getPublicationType(),
-        entity.getPublicationTitle(),
-        entity.getPublicationUrl(),
-        entity.getPublishDate(),
-        entity.getChannel(),
-        entity.getActionType(),
-        entity.getDownloadDateTime(),
-        entity.getCreatedDateTime()
-    );
-}
