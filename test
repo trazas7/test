@@ -1,1 +1,30 @@
 
+private QueryBuilder buildReadershipQuery(SearchRequest request) {
+    // Extract date range and pagination parameters
+    String fromDate = request.getFromDate(); // Start date
+    String toDate = request.getToDate();     // End date
+
+    // Create a range query for the date filter
+    QueryBuilder dateRangeQuery = QueryBuilders.rangeQuery("createdDateTime")
+        .gte(fromDate)  // Greater than or equal to fromDate
+        .lte(toDate);   // Less than or equal to toDate
+
+    // Construct the final boolean query
+    BoolQueryBuilder boolQuery = boolQuery()
+        .must(dateRangeQuery); // Apply date filtering
+
+    return boolQuery;
+}
+
+public List<ElasticReadership> searchIndex(SearchRequest request) {
+    SearchResponse response = elasticClient.prepareSearch(config.getIndex())
+        .setTypes(config.getType())
+        .setQuery(buildReadershipQuery(request))  // Apply date range query
+        .setFrom(request.getFrom())  // Pagination offset
+        .setSize(request.getSize())  // Number of records to fetch
+        .get();
+
+    return Stream.of(response.getHits().getHits())
+        .map(this::toElasticReadership)
+        .collect(Collectors.toList());
+}
