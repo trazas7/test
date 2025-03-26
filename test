@@ -1,77 +1,31 @@
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>ScrAibe Add-in</title>
-  <link rel="stylesheet" href="./taskpane.css" />
-</head>
-<body>
-  <div class="container">
-    <h1 class="header">ScrAibe</h1>
-    <div class="button-group">
-      <button id="btn-generate">GENERATE DRAFT</button>
-      <button>EDIT & REPHRASE TEXT</button>
-      <button>RUN COMPLIANCE CHECKS</button>
-      <button>SUGGEST TITLE</button>
-      <button>SUGGEST VISUAL</button>
-      <button>GENERATE KEY MESSAGES</button>
-      <button>TRANSLATE</button>
-      <button>PUSH TO WORKFLOW</button>
-      <button>RUN AD HOC TASK</button>
+import * as React from "react";
+import * as ReactDOM from "react-dom";
+import "./taskpane.css";
+
+const TaskPane = () => {
+  return (
+    <div className="container">
+      <h1 className="header">ScrAibe</h1>
+      <div className="button-group">
+        <button id="btn-generate">GENERATE DRAFT</button>
+        <button>EDIT & REPHRASE TEXT</button>
+        <button>RUN COMPLIANCE CHECKS</button>
+        <button>SUGGEST TITLE</button>
+        <button>SUGGEST VISUAL</button>
+        <button>GENERATE KEY MESSAGES</button>
+        <button>TRANSLATE</button>
+        <button>PUSH TO WORKFLOW</button>
+        <button>RUN AD HOC TASK</button>
+      </div>
     </div>
-  </div>
-
-  <script src="./taskpane.js"></script>
+  );
+};
+<body>
+  <div id="container"></div>
 </body>
-</html>
 
 
-body {
-  font-family: Arial, sans-serif;
-  margin: 0;
-  padding: 20px;
-  background: #f5f5f5;
-}
-
-.container {
-  background: white;
-  border-radius: 8px;
-  padding: 20px;
-  box-shadow: 0 0 8px rgba(0, 0, 0, 0.1);
-}
-
-.header {
-  color: #2e5c4f;
-  text-align: center;
-  font-size: 24px;
-  margin-bottom: 20px;
-}
-
-.button-group {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-button {
-  padding: 12px;
-  font-size: 16px;
-  border: none;
-  background-color: #137547;
-  color: white;
-  border-radius: 5px;
-  cursor: pointer;
-  transition: background-color 0.2s ease-in-out;
-}
-
-button:hover {
-  background-color: #0f5f3a;
-}
 
 Office.onReady(() => {
-  document.getElementById("btn-generate")?.addEventListener("click", () => {
-    console.log("Generate Draft clicked");
-    // TODO: Show prompt view or trigger backend
-    alert("Coming soon: Generate Draft!");
-  });
+  ReactDOM.render(<TaskPane />, document.getElementById("container"));
 });
