@@ -2,39 +2,64 @@
 Office.onReady(() => {
   console.log("Office is ready");
 
-  renderUI(false);
+  const loginButton = document.getElementById("ssoLoginBtn");
+  loginButton?.addEventListener("click", openSSOLogin);
+
+  // Start with unauthenticated view
+  showAuthState(false);
 });
 
-function renderUI(authenticated: boolean) {
-  const app = document.getElementById("app");
-  if (!app) return;
-
-  if (authenticated) {
-    app.innerHTML = `
-      <h2>Welcome!</h2>
-      <p>You are signed in via SSO.</p>
-    `;
-  } else {
-    app.innerHTML = `
-      <button id="ssoLoginBtn">Login with SSO</button>
-    `;
-    document.getElementById("ssoLoginBtn")?.addEventListener("click", openSSOLogin);
-  }
-}
-
 function openSSOLogin() {
-  const popup = window.open("https://markets360-stg.dev.bnpparibas.com", "_blank", "width=600,height=700");
+  const popup = window.open(
+    "https://markets360-stg.dev.bnpparibas.com",
+    "_blank",
+    "width=600,height=700"
+  );
 
   if (!popup) {
-    console.error("Popup blocked or failed");
+    console.error("Popup blocked");
     return;
   }
 
   const checkInterval = setInterval(() => {
     if (popup.closed) {
       clearInterval(checkInterval);
-      console.log("Popup closed — assuming login completed");
-      renderUI(true);
+      console.log("Popup closed — assuming login successful");
+
+      // Switch to authenticated UI
+      showAuthState(true);
     }
   }, 500);
 }
+
+function showAuthState(isAuthenticated: boolean) {
+  const unauth = document.getElementById("unauthenticated");
+  const auth = document.getElementById("authenticated");
+
+  if (!unauth || !auth) return;
+
+  unauth.style.display = isAuthenticated ? "none" : "block";
+  auth.style.display = isAuthenticated ? "block" : "none";
+}
+
+
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Publisher2 Add-in</title>
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+</head>
+<body>
+  <div id="unauthenticated">
+    <button id="ssoLoginBtn">Login with SSO</button>
+  </div>
+
+  <div id="authenticated" style="display: none;">
+    <h2>Welcome!</h2>
+    <p>You are signed in via SSO.</p>
+  </div>
+
+  <script src="taskpane.js"></script> <!-- This is the compiled TS -->
+</body>
+</html>
