@@ -1,63 +1,28 @@
-Office.onReady(() => {
-  console.log("Office is ready");
+@Configuration
+public class TempUserConfig {
 
-  const loginButton = document.getElementById("ssoLoginBtn");
-  if (loginButton) {
-    loginButton.addEventListener("click", openSSOLogin);
-  }
+    @Value("${custom-security.temp-user.username}")
+    private String username;
 
-  // Initial state: unauthenticated
-  showAuthState(false);
-});
+    @Value("${custom-security.temp-user.password}")
+    private String password;
 
-function openSSOLogin() {
-  const popup = window.open(
-    "https://markets360-stg.dev.bnpparibas.com", // Your SSO-protected site
-    "_blank",
-    "width=600,height=700"
-  );
+    @Bean
+    public UserDetailsService additionalUser(UserDetailsService baseService) {
+        InMemoryUserDetailsManager manager;
 
-  if (!popup) {
-    console.error("Popup blocked or failed");
-    return;
-  }
+        if (baseService instanceof InMemoryUserDetailsManager) {
+            manager = (InMemoryUserDetailsManager) baseService;
+        } else {
+            manager = new InMemoryUserDetailsManager();
+        }
 
-  const checkInterval = setInterval(() => {
-    if (popup.closed) {
-      clearInterval(checkInterval);
-      console.log("Popup closed — checking if user is authenticated...");
+        UserDetails tempUser = User.withUsername(username)
+                .password("{noop}" + password)
+                .roles("USER")
+                .build();
 
-      confirmAuthByFetchingSSOPage();
+        manager.createUser(tempUser);
+        return manager;
     }
-  }, 500);
-}
-
-function confirmAuthByFetchingSSOPage() {
-  fetch("https://markets360-stg.dev.bnpparibas.com/some-protected-path", {
-    method: "GET",
-    credentials: "include"
-  })
-    .then(res => {
-      if (res.ok) {
-        console.log("User is authenticated via SSO");
-        showAuthState(true);
-      } else {
-        console.warn("User is not authenticated");
-        showAuthState(false);
-      }
-    })
-    .catch(err => {
-      console.error("Auth check failed:", err);
-      showAuthState(false);
-    });
-}
-
-function showAuthState(isAuthenticated) {
-  const unauth = document.getElementById("unauthenticated");
-  const auth = document.getElementById("authenticated");
-
-  if (!unauth || !auth) return;
-
-  unauth.style.display = isAuthenticated ? "none" : "block";
-  auth.style.display = isAuthenticated ? "block" : "none";
 }
