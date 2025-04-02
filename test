@@ -1,1 +1,45 @@
 
+Office.onReady(() => {
+  console.log("Office is ready");
+
+  const btn = document.getElementById("ssoLoginBtn");
+  if (btn) {
+    btn.addEventListener("click", openSSOLogin);
+  }
+});
+
+function openSSOLogin() {
+  const ssoUrl = "https://markets360-stg.dev.bnpparibas.com"; // existing SSO-protected site
+
+  const popup = window.open(ssoUrl, "_blank", "width=600,height=700");
+
+  // Option 1: Listen for postMessage (if you control the SSO site)
+  window.addEventListener("message", (event) => {
+    if (event.origin.includes("dev.bnpparibas.com") && event.data?.status === "authenticated") {
+      console.log("SSO via message success");
+      // Continue with your app logic
+    }
+  });
+
+  // Option 2: Fallback – wait for popup to close
+  const timer = setInterval(() => {
+    if (popup?.closed) {
+      clearInterval(timer);
+      console.log("Popup closed — assuming user is authenticated");
+      // Optionally, call your own API to double-check
+    }
+  }, 500);
+}
+
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Publisher2 Add-in</title>
+  <script src="./taskpane.js"></script>
+</head>
+<body>
+  <h2>Publisher2 Add-in</h2>
+  <button id="ssoLoginBtn">Login with SSO</button>
+</body>
+</html>
