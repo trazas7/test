@@ -3,15 +3,17 @@ Office.onReady(() => {
   console.log("Office is ready");
 
   const loginButton = document.getElementById("ssoLoginBtn");
-  loginButton?.addEventListener("click", openSSOLogin);
+  if (loginButton) {
+    loginButton.addEventListener("click", openSSOLogin);
+  }
 
-  // Start with unauthenticated view
+  // Start with not authenticated state
   showAuthState(false);
 });
 
 function openSSOLogin() {
   const popup = window.open(
-    "https://markets360-stg.dev.bnpparibas.com",
+    "https://markets360-stg.dev.bnpparibas.com", // Replace with real SSO-protected page
     "_blank",
     "width=600,height=700"
   );
@@ -24,15 +26,13 @@ function openSSOLogin() {
   const checkInterval = setInterval(() => {
     if (popup.closed) {
       clearInterval(checkInterval);
-      console.log("Popup closed — assuming login successful");
-
-      // Switch to authenticated UI
+      console.log("Popup closed — assuming login done");
       showAuthState(true);
     }
   }, 500);
 }
 
-function showAuthState(isAuthenticated: boolean) {
+function showAuthState(isAuthenticated) {
   const unauth = document.getElementById("unauthenticated");
   const auth = document.getElementById("authenticated");
 
@@ -41,25 +41,3 @@ function showAuthState(isAuthenticated: boolean) {
   unauth.style.display = isAuthenticated ? "none" : "block";
   auth.style.display = isAuthenticated ? "block" : "none";
 }
-
-
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>Publisher2 Add-in</title>
-  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
-</head>
-<body>
-  <div id="unauthenticated">
-    <button id="ssoLoginBtn">Login with SSO</button>
-  </div>
-
-  <div id="authenticated" style="display: none;">
-    <h2>Welcome!</h2>
-    <p>You are signed in via SSO.</p>
-  </div>
-
-  <script src="taskpane.js"></script> <!-- This is the compiled TS -->
-</body>
-</html>
