@@ -1,28 +1,24 @@
 @Configuration
 public class TempUserConfig {
 
-    @Value("${custom-security.temp-user.username}")
+    @Value("${custom-security.user.name}")
     private String username;
 
-    @Value("${custom-security.temp-user.password}")
+    @Value("${custom-security.user.password}")
     private String password;
 
     @Bean
-    public UserDetailsService additionalUser(UserDetailsService baseService) {
-        InMemoryUserDetailsManager manager;
-
-        if (baseService instanceof InMemoryUserDetailsManager) {
-            manager = (InMemoryUserDetailsManager) baseService;
-        } else {
-            manager = new InMemoryUserDetailsManager();
-        }
+    public InMemoryUserDetailsManager inMemoryUserDetailsManager() {
+        UserDetails defaultUser = User.withUsername("gca")
+                .password("{noop}gca")
+                .roles("USER")
+                .build();
 
         UserDetails tempUser = User.withUsername(username)
                 .password("{noop}" + password)
                 .roles("USER")
                 .build();
 
-        manager.createUser(tempUser);
-        return manager;
+        return new InMemoryUserDetailsManager(defaultUser, tempUser);
     }
 }
