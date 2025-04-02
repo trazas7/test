@@ -12,37 +12,31 @@ function renderUI(authenticated: boolean) {
     app.innerHTML = `
       <button id="ssoLoginBtn">Login with SSO</button>
     `;
-
-    const loginBtn = document.getElementById("ssoLoginBtn");
-    loginBtn?.addEventListener("click", openSSOLogin);
+    document.getElementById("ssoLoginBtn")?.addEventListener("click", openSSOLogin);
   }
 }
 
 function openSSOLogin() {
-  const popup = window.open(
-    "https://markets360-stg.dev.bnpparibas.com", // existing SSO-protected site
-    "_blank",
-    "width=600,height=700"
-  );
+  const ssoUrl = "https://markets360-stg.dev.bnpparibas.com"; // SSO-protected site
+  const popup = window.open(ssoUrl, "_blank", "width=600,height=700");
 
   if (!popup) {
-    console.error("Popup blocked");
+    console.error("Popup blocked or failed");
     return;
   }
 
-  const check = setInterval(() => {
+  const checkInterval = setInterval(() => {
     if (popup.closed) {
-      clearInterval(check);
-      console.log("Popup closed — assuming login is complete");
-      // Now show the welcome screen
+      clearInterval(checkInterval);
+      console.log("Popup closed — assuming login completed");
       renderUI(true);
     }
   }, 500);
 }
 
-Office.onReady(() => {
-  console.log("Office is ready");
-
-  // Initial state: assume not authenticated
-  renderUI(false);
-});
+Office.initialize = () => {
+  Office.onReady().then(() => {
+    console.log("Office is ready");
+    renderUI(false); // Start with unauthenticated UI
+  });
+};
