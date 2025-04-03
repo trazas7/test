@@ -2,16 +2,16 @@
 if (childDivs.length > 1) {
     const childArray = Array.prototype.slice.call(childDivs);
 
-    function extractDate(text) {
+    const extractDate = function (text: string): Date {
         const match = text.match(/\d{1,2} [A-Za-z]+ \d{4}/); // e.g. "26 February 2025"
-        return match ? new Date(match[0]) : new Date(0); // fallback: very old date
-    }
+        return match ? new Date(match[0]) : new Date(0); // fallback: very old
+    };
 
     childArray.sort(function (a, b) {
         const dateA = extractDate(a.textContent || '');
         const dateB = extractDate(b.textContent || '');
         return dateB.getTime() - dateA.getTime(); // Descending
-    });
+    }); // <<=== THIS was missing in your current version
 
     for (let i = 1; i < childArray.length; i++) {
         parentDiv.removeChild(childArray[i]);
