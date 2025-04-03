@@ -1,11 +1,11 @@
+
 if (childDivs.length > 1) {
     const sortedDivs = Array.from(childDivs).sort((a, b) => {
         const dateA = new Date(a.textContent?.trim() || '');
         const dateB = new Date(b.textContent?.trim() || '');
-        return dateB.getTime() - dateA.getTime(); // Descending: newest first
+        return dateB.getTime() - dateA.getTime(); // Descending: latest first
     });
 
-    // Keep the first (latest), remove the rest
     for (let i = 1; i < sortedDivs.length; i++) {
         parentDiv.removeChild(sortedDivs[i]);
     }
