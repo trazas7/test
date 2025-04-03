@@ -1,12 +1,19 @@
 
 if (childDivs.length > 1) {
-    const sortedDivs = Array.from(childDivs).sort((a, b) => {
-        const dateA = new Date(a.textContent?.trim() || '');
-        const dateB = new Date(b.textContent?.trim() || '');
-        return dateB.getTime() - dateA.getTime(); // Descending: latest first
+    const childArray = Array.prototype.slice.call(childDivs);
+
+    function extractDate(text) {
+        const match = text.match(/\d{1,2} [A-Za-z]+ \d{4}/); // e.g. "26 February 2025"
+        return match ? new Date(match[0]) : new Date(0); // fallback: very old date
+    }
+
+    childArray.sort(function (a, b) {
+        const dateA = extractDate(a.textContent || '');
+        const dateB = extractDate(b.textContent || '');
+        return dateB.getTime() - dateA.getTime(); // Descending
     });
 
-    for (let i = 1; i < sortedDivs.length; i++) {
-        parentDiv.removeChild(sortedDivs[i]);
+    for (let i = 1; i < childArray.length; i++) {
+        parentDiv.removeChild(childArray[i]);
     }
 }
