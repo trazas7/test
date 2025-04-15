@@ -1,0 +1,1 @@
+=TRIM(MID(TEXTAFTER(A1, "Remote Server returned "), FIND(";", TEXTAFTER(A1, "Remote Server returned ")) + 2, FIND("For more", TEXTAFTER(A1, "Remote Server returned ")) - FIND(";", TEXTAFTER(A1, "Remote Server returned ")) - 2))
