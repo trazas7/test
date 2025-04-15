@@ -1,1 +1,1 @@
-=TRIM(MID(TEXTAFTER(A1,"Remote Server returned "), FIND("SMTP;", TEXTAFTER(A1,"Remote Server returned "))+6, FIND("For more", TEXTAFTER(A1,"Remote Server returned ")) - FIND("SMTP;", TEXTAFTER(A1,"Remote Server returned ")) - 6))
+=TRIM(MID(TEXTAFTER(A1,"Remote Server returned '"), FIND("Recipient", TEXTAFTER(A1,"Remote Server returned '")), 100))
