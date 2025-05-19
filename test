@@ -1,0 +1,17 @@
+else if (Office.context.host === Office.HostType.PowerPoint) {
+    await PowerPoint.run(async (context) => {
+        const selection = context.presentation.getSelectedTextRange();
+        selection.load("text");
+        await context.sync();
+
+        const selectedText = selection.text.trim();
+        if (!selectedText) {
+            showMessage("Nothing selected in PowerPoint to copy.", "error");
+            return;
+        }
+
+        const input = getElementById<HTMLTextAreaElement>("prompt-input");
+        input.value += "\n" + selectedText;
+        showMessage("Selected text added to prompt.", "info");
+    });
+}
