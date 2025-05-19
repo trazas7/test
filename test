@@ -17,26 +17,34 @@ getElementById("insert-result").addEventListener("click", async () => {
   try {
     if (Office.context.host === Office.HostType.Word) {
       await Word.run(async (context) => {
-        context.document.getSelection().insertText(textToInsert, Word.InsertLocation.replace);
+        const range = context.document.getSelection();
+        range.insertText(textToInsert, Word.InsertLocation.replace);
         await context.sync();
       });
     } else if (Office.context.host === Office.HostType.PowerPoint) {
       await PowerPoint.run(async (context) => {
-        const slide = context.presentation.getSelectedSlide();
-        slide.load("shapes");
+        const selectedTextRange = context.presentation.getSelectedTextRange();
+        selectedTextRange.load("text");
         await context.sync();
 
-        const shapes = slide.shapes;
-        if (shapes.items.length > 0) {
-          const shape = shapes.items[0]; // Insert into the first shape
-          shape.textFrame.textRange.insertText(textToInsert, PowerPoint.InsertLocation.replace);
-          await context.sync();
-        } else {
-          showMessage("No shape selected to insert text.", "error");
+        if (!selectedTextRange.text.trim()) {
+          showMessage("No text selected in PowerPoint.", "error");
+          return;
         }
+
+        // Replace selected text
+        selectedTextRange.text = textToInsert;
+        await context.sync();
       });
     }
   } catch (error) {
+    console.error(error);
     showMessage("Error inserting text.", "error");
   }
 });
+
+<Requirements>
+  <Sets DefaultMinVersion="1.5">
+    <Set Name="PowerPointApi" />
+  </Sets>
+</Requirements>
