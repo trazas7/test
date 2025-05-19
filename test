@@ -1,17 +1,43 @@
-else if (Office.context.host === Office.HostType.PowerPoint) {
-    await PowerPoint.run(async (context) => {
-        const selection = context.presentation.getSelectedTextRange();
-        selection.load("text");
-        await context.sync();
+for (const buttonId in TASK_CONFIG) {
+  getElementById(buttonId).addEventListener("click", async () => {
+    try {
+      let selectedText = "";
 
-        const selectedText = selection.text.trim();
-        if (!selectedText) {
-            showMessage("Nothing selected in PowerPoint to copy.", "error");
-            return;
-        }
+      if (Office.context.host === Office.HostType.Word) {
+        await Word.run(async (context) => {
+          const selection = context.document.getSelection();
+          selection.load("text");
+          await context.sync();
+          selectedText = selection.text.trim();
+        });
+      } else if (Office.context.host === Office.HostType.PowerPoint) {
+        await PowerPoint.run(async (context) => {
+          const selection = context.presentation.getSelectedTextRange();
+          selection.load("text");
+          await context.sync();
+          selectedText = selection.text.trim();
+        });
+      }
 
-        const input = getElementById<HTMLTextAreaElement>("prompt-input");
-        input.value += "\n" + selectedText;
-        showMessage("Selected text added to prompt.", "info");
-    });
+      const task = TASK_CONFIG[buttonId];
+      const promptText = selectedText
+        ? task.prompt + selectedText
+        : null;
+
+      if (!promptText) {
+        showMessage("Please select text in the document first.", "error");
+        return;
+      }
+
+      showPromptScreen({
+        heading: task.heading,
+        prompt: promptText,
+        role: task.role,
+        mode: task.mode,
+      });
+
+    } catch (error) {
+      showMessage("Error retrieving selected text from document.", "error");
+    }
+  });
 }
