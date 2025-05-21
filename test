@@ -1,25 +1,28 @@
 } else if (Office.context.host === Office.HostType.PowerPoint) {
   await PowerPoint.run(async (context) => {
-    if (task.shouldSelectText) {
-      // 1) User wants only the current selection
-      const selection = context.presentation.getSelectedTextRange();
-      selection.load("text");
-      await context.sync();
-      selectedText = selection.text.trim();
-    } else {
-      // 2) User wants the entire slide deck
+    // 1) Try to get whatever the user has selected
+    const selection = context.presentation.getSelectedTextRange();
+    selection.load("text");
+    await context.sync();
+    const selText = selection.text.trim();
+
+    if (selText) {
+      // Use the selected text
+      selectedText = selText;
+    }
+    else if (task.shouldSelectText) {
+      // No selection + allowed to select whole deck → grab every shape’s text
       const slides = context.presentation.slides;
       slides.load("items");
       await context.sync();
 
       let fullText = "";
       for (const slide of slides.items) {
-        // load all shapes on this slide
         const shapes = slide.shapes;
         shapes.load("items");
         await context.sync();
 
-        // queue up loading each shape's text
+        // load each shape’s textFrame.text
         for (const shape of shapes.items) {
           if (shape.textFrame) {
             shape.textFrame.load("text");
@@ -27,10 +30,10 @@
         }
         await context.sync();
 
-        // read out the text
+        // concatenate
         for (const shape of shapes.items) {
           const tf = shape.textFrame;
-          if (tf && tf.text) {
+          if (tf?.text) {
             fullText += tf.text + "\n";
           }
         }
@@ -38,5 +41,6 @@
 
       selectedText = fullText.trim();
     }
+    // else → leave selectedText = "" so your `if (!promptText)` fires
   });
 }
