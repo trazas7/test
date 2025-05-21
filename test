@@ -1,18 +1,42 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<OfficeApp xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
-           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-           xsi:type="TaskPaneApp" 
-           xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
-           xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
-           Id="00000000-0000-0000-0000-000000000123"
-           Version="1.0.0.0"
-           ProviderName="Test"
-           DefaultLocale="en-US"
-           DisplayName="Hello Test Add-in"
-           Description="Minimal test add-in">
-  <Hosts><Host Name="Document"/></Hosts>
-  <DefaultSettings>
-    <SourceLocation DefaultValue="https://www.microsoft.com"/>
-  </DefaultSettings>
-  <Permissions>ReadWriteDocument</Permissions>
-</OfficeApp>
+else if (Office.context.host === Office.HostType.PowerPoint) {
+  await PowerPoint.run(async (context) => {
+    // 1) Try selected text
+    const selection = context.presentation.getSelectedTextRange();
+    selection.load("text");
+    await context.sync();
+    const selText = selection.text.trim();
+
+    if (selText) {
+      selectedText = selText;
+    } 
+    // 2) Fallback: extract all text from all slides if allowed
+    else if (!task.shouldSelectText && task.mode !== "adhoc") {
+      const slides = context.presentation.slides;
+      slides.load("items");
+      await context.sync();
+
+      let fullText = "";
+      for (const slide of slides.items) {
+        const shapes = slide.shapes;
+        shapes.load("items");
+        await context.sync();
+
+        for (const shape of shapes.items) {
+          if (shape.textFrame) {
+            shape.textFrame.textRange.load("text");
+          }
+        }
+        await context.sync();
+
+        for (const shape of shapes.items) {
+          if (shape.textFrame) {
+            const shapeText = shape.textFrame.textRange.text.trim();
+            if (shapeText) fullText += shapeText + "\n";
+          }
+        }
+      }
+
+      selectedText = fullText.trim();
+    }
+  });
+}
