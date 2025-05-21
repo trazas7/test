@@ -1,22 +1,18 @@
-if (Office.context.host === Office.HostType.Word) {
-  await Word.run(async (context) => {
-    // 1) Try the current selection
-    const selection = context.document.getSelection();
-    selection.load("text");
-    await context.sync();
-    const selText = selection.text.trim();
-
-    if (selText) {
-      // Use what’s selected
-      selectedText = selText;
-    }
-    else if (task.shouldSelectText) {
-      // Nothing selected + allowed to grab whole doc → get body
-      const body = context.document.body;
-      body.load("text");
-      await context.sync();
-      selectedText = body.text.trim();
-    }
-    // else leave selectedText="" so your existing error check fires
-  });
-}
+<?xml version="1.0" encoding="UTF-8"?>
+<OfficeApp xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xsi:type="TaskPaneApp" 
+           xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+           xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
+           Id="00000000-0000-0000-0000-000000000123"
+           Version="1.0.0.0"
+           ProviderName="Test"
+           DefaultLocale="en-US"
+           DisplayName="Hello Test Add-in"
+           Description="Minimal test add-in">
+  <Hosts><Host Name="Document"/></Hosts>
+  <DefaultSettings>
+    <SourceLocation DefaultValue="https://www.microsoft.com"/>
+  </DefaultSettings>
+  <Permissions>ReadWriteDocument</Permissions>
+</OfficeApp>
