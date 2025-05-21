@@ -1,1 +1,68 @@
+for (const buttonId in TASK_CONFIG) {
+    getElementById(buttonId).addEventListener("click", async () => {
+      try {
+        let selectedText = "";
+        const task = TASK_CONFIG[buttonId];
 
+        if (Office.context.host === Office.HostType.Word) {
+          await Word.run(async (context) => {
+            if (task.shouldSelectText) {
+              const selection = context.document.getSelection();
+              selection.load("text");
+              await context.sync();
+              selectedText = selection.text.trim();
+            } else {
+              const body = context.document.body;
+              body.load("text");
+              await context.sync();
+              selectedText = body.text.trim();
+            }
+          });
+        } else if (Office.context.host === Office.HostType.PowerPoint) {
+          await PowerPoint.run(async (context) => {
+            if (task.shouldSelectText) {
+              const selection = context.presentation.getSelectedTextRange();
+              selection.load("text");
+              await context.sync();
+              selectedText = selection.text.trim();
+            } else {
+              const slides = context.presentation.slides;
+              slides.load("items");
+              await context.sync();
+
+              let fullText = "";
+              for (const slide of slides.items) {
+                slide.shapes.load("textFrame/text");
+                await context.sync();
+
+                for (const shape of slide.shapes.items) {
+                  if (shape.textFrame?.text) {
+                    fullText += shape.textFrame.text + "\n";
+                  }
+                }
+              }
+              selectedText = fullText.trim();
+            }
+          });
+        }
+
+        const promptText = selectedText ? task.prompt + selectedText : null;
+
+        if (!promptText) {
+          showMessage("Please select text in the document first.", "error");
+          return;
+        }
+
+        showPromptScreen({
+          heading: task.heading,
+          prompt: promptText,
+          role: task.role,
+          mode: task.mode,
+          skipPromptReview: task.skipPromptReview,
+        });
+      } catch (error) {
+        showMessage("Error retrieving selected text from document.", "error");
+      }
+    });
+  }
+});
