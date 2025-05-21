@@ -1,46 +1,22 @@
-} else if (Office.context.host === Office.HostType.PowerPoint) {
-  await PowerPoint.run(async (context) => {
-    // 1) Try to get whatever the user has selected
-    const selection = context.presentation.getSelectedTextRange();
+if (Office.context.host === Office.HostType.Word) {
+  await Word.run(async (context) => {
+    // 1) Try the current selection
+    const selection = context.document.getSelection();
     selection.load("text");
     await context.sync();
     const selText = selection.text.trim();
 
     if (selText) {
-      // Use the selected text
+      // Use what’s selected
       selectedText = selText;
     }
     else if (task.shouldSelectText) {
-      // No selection + allowed to select whole deck → grab every shape’s text
-      const slides = context.presentation.slides;
-      slides.load("items");
+      // Nothing selected + allowed to grab whole doc → get body
+      const body = context.document.body;
+      body.load("text");
       await context.sync();
-
-      let fullText = "";
-      for (const slide of slides.items) {
-        const shapes = slide.shapes;
-        shapes.load("items");
-        await context.sync();
-
-        // load each shape’s textFrame.text
-        for (const shape of shapes.items) {
-          if (shape.textFrame) {
-            shape.textFrame.load("text");
-          }
-        }
-        await context.sync();
-
-        // concatenate
-        for (const shape of shapes.items) {
-          const tf = shape.textFrame;
-          if (tf?.text) {
-            fullText += tf.text + "\n";
-          }
-        }
-      }
-
-      selectedText = fullText.trim();
+      selectedText = body.text.trim();
     }
-    // else → leave selectedText = "" so your `if (!promptText)` fires
+    // else leave selectedText="" so your existing error check fires
   });
 }
