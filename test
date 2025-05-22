@@ -1,42 +1,18 @@
-else if (Office.context.host === Office.HostType.PowerPoint) {
-  await PowerPoint.run(async (context) => {
-    // 1) Try selected text
-    const selection = context.presentation.getSelectedTextRange();
-    selection.load("text");
-    await context.sync();
-    const selText = selection.text.trim();
+<div id="loading-spinner" style="display: none;">
+  <div class="spinner"></div>
+</div>
 
-    if (selText) {
-      selectedText = selText;
-    } 
-    // 2) Fallback: extract all text from all slides if allowed
-    else if (!task.shouldSelectText && task.mode !== "adhoc") {
-      const slides = context.presentation.slides;
-      slides.load("items");
-      await context.sync();
+.spinner {
+  border: 4px solid #f3f3f3;
+  border-top: 4px solid #555;
+  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  animation: spin 1s linear infinite;
+  margin: 10px auto;
+}
 
-      let fullText = "";
-      for (const slide of slides.items) {
-        const shapes = slide.shapes;
-        shapes.load("items");
-        await context.sync();
-
-        for (const shape of shapes.items) {
-          if (shape.textFrame) {
-            shape.textFrame.textRange.load("text");
-          }
-        }
-        await context.sync();
-
-        for (const shape of shapes.items) {
-          if (shape.textFrame) {
-            const shapeText = shape.textFrame.textRange.text.trim();
-            if (shapeText) fullText += shapeText + "\n";
-          }
-        }
-      }
-
-      selectedText = fullText.trim();
-    }
-  });
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
 }
