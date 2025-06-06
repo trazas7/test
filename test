@@ -1,14 +1,6 @@
-#output-text p {
-  margin: 0.4em 0;
-}
-
-#output-text li {
-  margin: 0.2em 0;
-}
-
-#output-text h1,
-#output-text h2,
-#output-text h3 {
-  margin-top: 0.6em;
-  margin-bottom: 0.3em;
-}
+const agent = new https.Agent({
+  cert,
+  key,
+  passphrase,
+  rejectUnauthorized: true, // Important: Enable SSL validation
+});
