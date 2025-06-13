@@ -1,49 +1,17 @@
-import express from 'express';
-import https from 'https';
-import fs from 'fs';
-import axios from 'axios';
-import cookieParser from 'cookie-parser';
+// Declare the config object (initially empty)
+export const TASK_CONFIG: Record<string, any> = {};
 
-const app = express();
-app.use(cookieParser());
+// Load and populate it before using
+export async function initializeTaskConfig(): Promise<void> {
+  const prompts = await getLLMPrompts();
 
-const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+  prompts.forEach(prompt => {
+    const key = `${prompt.name.toLowerCase()}-btn`;
 
-app.get("/check-identity", async (req, res) => {
-  console.log("🔍 Incoming cookies:", req.headers.cookie);
-
-  try {
-    const response = await axios.get("api-path", {
-      httpsAgent,
-      headers: {
-        Cookie: req.headers.cookie || "",
-      },
-      withCredentials: true
-    });
-
-    res.setHeader("Access-Control-Allow-Origin", "https://localhost:3000");
-    res.setHeader("Access-Control-Allow-Credentials", "true");
-    res.status(200).send(response.data);
-  } catch (err) {
-    console.error("❌ Proxy request failed:", err.message);
-    res.status(401).send("Unauthorized");
-  }
-});
-
-// CORS preflight handler
-app.options("/check-identity", (req, res) => {
-  res.setHeader("Access-Control-Allow-Origin", "https://localhost:3000");
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  res.sendStatus(200);
-});
-
-// 🔐 HTTPS server using mkcert-generated certs
-const httpsOptions = {
-  key: fs.readFileSync("./localhost-key.pem"),
-  cert: fs.readFileSync("./localhost.pem")
-};
-
-https.createServer(httpsOptions, app).listen(3001, () => {
-  console.log("✅ HTTPS Proxy server running at https://localhost:3001");
-});
+    TASK_CONFIG[key] = {
+      heading: prompt.name,
+      prompt: prompt.prompt,
+      name: prompt.name
+    };
+  });
+}
