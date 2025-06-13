@@ -1,52 +1,34 @@
-// proxy-server.js
-const express = require("express");
-const https = require("https");
-const axios = require("axios");
-const cookieParser = require("cookie-parser");
+// Top of your file
+import express from 'express';
+import https from 'https';
+import axios from 'axios';
+import cookieParser from 'cookie-parser';
 
 const app = express();
 app.use(cookieParser());
 
-// Ignore self-signed or invalid certs
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
-// Proxy GET request to SSO-protected API
-app.get("/proxy/*", async (req, res) => {
+app.get("/check-identity", async (req, res) => {
     try {
-        const targetUrl = `https://base-url${req.path.replace('/proxy', '')}`;
-        
-        const response = await axios.get(targetUrl, {
+        const response = await axios.get("https://base-url", {
             httpsAgent,
             headers: {
-                // Forward user's cookies (SSO session)
                 Cookie: req.headers.cookie || "",
-                // Forward user agent and others if needed
-                "User-Agent": req.headers["user-agent"],
+                "User-Agent": req.headers["user-agent"]
             },
             withCredentials: true
         });
 
-        // Set CORS headers to allow local frontend
         res.setHeader("Access-Control-Allow-Origin", "http://localhost:3000");
         res.setHeader("Access-Control-Allow-Credentials", "true");
-
-        res.status(response.status).send(response.data);
-    } catch (error) {
-        console.error("Proxy error:", error.message);
-        res.status(500).send("Proxy request failed");
+        res.status(200).send(response.data);
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send("Proxy error");
     }
 });
 
-// Allow preflight if needed
-app.options("/proxy/*", (req, res) => {
-    res.setHeader("Access-Control-Allow-Origin", "http://localhost:3000");
-    res.setHeader("Access-Control-Allow-Credentials", "true");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-    res.sendStatus(200);
-});
-
-const PORT = 3001;
-app.listen(PORT, () => {
-    console.log(`🔄 Proxy running at http://localhost:${PORT}/proxy`);
+app.listen(3001, () => {
+    console.log("Proxy server running on http://localhost:3001");
 });
