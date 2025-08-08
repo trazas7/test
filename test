@@ -1,0 +1,16 @@
+await Word.run(async (context) => {
+  const range = context.document.getSelection();
+  // Load current formatting in one go
+  range.load(["font/name", "font/size", "font/color"]);
+  await context.sync();
+
+  // Build inline style from that formatting
+  const style = `font-family:${range.font.name}; font-size:${range.font.size}pt; color:${range.font.color};`;
+
+  // Prepare your text or HTML — ensure it has your hyperlink (`<a href="...">text</a>`)
+  // e.g. wrapping selection or building new content
+  const html = `<span style="${style}">${textToInsert}</span>`;
+
+  range.insertHtml(html, Word.InsertLocation.replace);
+  await context.sync();
+});
