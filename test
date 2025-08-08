@@ -1,16 +1,51 @@
-await Word.run(async (context) => {
-  const range = context.document.getSelection();
-  // Load current formatting in one go
-  range.load(["font/name", "font/size", "font/color"]);
-  await context.sync();
+Office.context.document.getSelectedDataAsync(
+    Office.CoercionType.Html,          // must be Html to preserve <a>
+    (res) => {
+        if (res.status !== Office.AsyncResultStatus.Succeeded) {
+            console.error(res.error.message);
+            return;
+        }
 
-  // Build inline style from that formatting
-  const style = `font-family:${range.font.name}; font-size:${range.font.size}pt; color:${range.font.color};`;
+        const rawHtml = res.value;          // full Word HTML
+        const mdText = htmlToMarkdownLinks(rawHtml);
+        sendToLLM(mdText);                  // ← whatever call you already have
+    }
+);
 
-  // Prepare your text or HTML — ensure it has your hyperlink (`<a href="...">text</a>`)
-  // e.g. wrapping selection or building new content
-  const html = `<span style="${style}">${textToInsert}</span>`;
 
-  range.insertHtml(html, Word.InsertLocation.replace);
-  await context.sync();
+function htmlToMarkdownLinks(html) {
+    const parser = new DOMParser();
+    const doc    = parser.parseFromString(html, "text/html");
+
+    function walk(node) {
+        if (node.nodeType === Node.TEXT_NODE) {
+            return node.textContent;
+        }
+        if (node.nodeType === Node.ELEMENT_NODE &&
+            node.tagName.toLowerCase() === "a") {
+
+            const href = node.getAttribute("href");
+            const txt  = Array.from(node.childNodes).map(walk).join("");
+            return `[${txt}](${href})`;      // ← replaces big <a> blob
+        }
+        return Array.from(node.childNodes).map(walk).join("");
+    }
+
+    return walk(doc.body).replace(/\s+/g, " ").trim();
+}
+
+function markdownLinksToHtml(text) {
+    return text.replace(
+        /\[([^\]]+)\]\(([^)]+)\)/g,          //   [text](url)
+        (_m, label, href) => `<a href="${href}">${label}</a>`
+    );
+}
+
+// — inside a Word.run —
+Word.run(async (ctx) => {
+    const selection = ctx.document.getSelection();
+    const html      = markdownLinksToHtml(llmReply);
+
+    selection.insertHtml(html, Word.InsertLocation.replace);
+    await ctx.sync();
 });
