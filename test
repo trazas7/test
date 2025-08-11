@@ -1,51 +1,13 @@
-Office.context.document.getSelectedDataAsync(
-    Office.CoercionType.Html,          // must be Html to preserve <a>
-    (res) => {
-        if (res.status !== Office.AsyncResultStatus.Succeeded) {
-            console.error(res.error.message);
-            return;
-        }
+await Word.run(async (context) => {
+  const sel = context.document.getSelection();
+  const htmlRes = sel.getHtml();
+  await context.sync();
 
-        const rawHtml = res.value;          // full Word HTML
-        const mdText = htmlToMarkdownLinks(rawHtml);
-        sendToLLM(mdText);                  // ← whatever call you already have
-    }
-);
+  const doc = new DOMParser().parseFromString(htmlRes.value || "", "text/html");
+  const text = (doc.body?.innerText || "").trim();
+  const links = Array.from(doc.querySelectorAll("a"))
+    .map(a => ({ text: (a.textContent || "").trim(), href: a.getAttribute("href") || "" }))
+    .filter(x => x.href);
 
-
-function htmlToMarkdownLinks(html) {
-    const parser = new DOMParser();
-    const doc    = parser.parseFromString(html, "text/html");
-
-    function walk(node) {
-        if (node.nodeType === Node.TEXT_NODE) {
-            return node.textContent;
-        }
-        if (node.nodeType === Node.ELEMENT_NODE &&
-            node.tagName.toLowerCase() === "a") {
-
-            const href = node.getAttribute("href");
-            const txt  = Array.from(node.childNodes).map(walk).join("");
-            return `[${txt}](${href})`;      // ← replaces big <a> blob
-        }
-        return Array.from(node.childNodes).map(walk).join("");
-    }
-
-    return walk(doc.body).replace(/\s+/g, " ").trim();
-}
-
-function markdownLinksToHtml(text) {
-    return text.replace(
-        /\[([^\]]+)\]\(([^)]+)\)/g,          //   [text](url)
-        (_m, label, href) => `<a href="${href}">${label}</a>`
-    );
-}
-
-// — inside a Word.run —
-Word.run(async (ctx) => {
-    const selection = ctx.document.getSelection();
-    const html      = markdownLinksToHtml(llmReply);
-
-    selection.insertHtml(html, Word.InsertLocation.replace);
-    await ctx.sync();
+  
 });
