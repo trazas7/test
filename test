@@ -1,12 +1,13 @@
 
-import sanitizeHtml from "sanitize-html";
+// npm i dompurify
+import DOMPurify from 'dompurify';
 
-export function minimalize(html) {
-  return sanitizeHtml(html, {
-    allowedTags: ["a", "br"],
-    allowedAttributes: { a: ["href"] },
-    transformTags: {
-      p: "br", div: "br", li: "br", tr: "br", h1: "br", h2: "br", h3: "br"
-    }
-  }).trim();
+export function minimalize(html: string) {
+  // convert block endings to <br>, then keep only <a href> and <br>
+  const withBreaks = html.replace(/<\/(p|div|li|tr|h[1-6])>/gi, '<br>');
+  return DOMPurify.sanitize(withBreaks, {
+    ALLOWED_TAGS: ['a', 'br'],
+    ALLOWED_ATTR: ['href'],
+    KEEP_CONTENT: true
+  }).replace(/(?:<br>\s*){3,}/g, '<br><br>').trim();
 }
