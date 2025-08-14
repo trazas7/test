@@ -1,57 +1,12 @@
-#!/usr/bin/env bash
-set -euo pipefail
 
-ENV="${1:-dev}"                 # dev | qa | prod
-OUT_WAR="add-in.war"
+import sanitizeHtml from "sanitize-html";
 
-echo "Building for env: $ENV"
-rm -rf dist && mkdir -p dist
-
-# 1) Bundle TS -> JS (includes external libs like 'marked')
-npx esbuild src/taskpane/taskpane.ts --bundle --minify --sourcemap \
-  --outfile=dist/taskpane.js
-
-# 2) Copy runtime files
-cp src/taskpane/taskpane.html dist/
-cp src/taskpane/taskpane.css  dist/ || true
-[ -d assets ] && cp -R assets dist/assets || true
-[ -d public ] && cp -R public/* dist/ || true
-
-# 3) Copy env config -> dist/config.js
-CFG="src/config/config.$ENV.js"
-[ -f "$CFG" ] || { echo "Missing $CFG"; exit 1; }
-cp "$CFG" dist/config.js
-
-# 4) Package as WAR
-rm -f "$OUT_WAR"
-( cd dist && zip -rq "../$OUT_WAR" . )
-echo "Created $OUT_WAR"
-
-
-param([string]$Env = "dev")  # dev | qa | prod
-$OutWar = "add-in.war"
-
-Write-Host "Building for env: $Env"
-Remove-Item dist -Recurse -Force -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Path dist | Out-Null
-
-# 1) Bundle TS -> JS
-npx esbuild src\taskpane\taskpane.ts --bundle --minify --sourcemap `
-  --outfile=dist\taskpane.js
-
-# 2) Copy runtime files
-Copy-Item src\taskpane\taskpane.html dist\
-Copy-Item src\taskpane\taskpane.css  dist\ -ErrorAction SilentlyContinue
-if (Test-Path assets) { Copy-Item assets dist\assets -Recurse }
-if (Test-Path public) { Copy-Item public\* dist\ -Recurse }
-
-# 3) Copy env config -> dist/config.js
-$cfg = "src\config\config.$Env.js"
-if (!(Test-Path $cfg)) { throw "Missing $cfg" }
-Copy-Item $cfg "dist\config.js"
-
-# 4) Package as WAR
-Remove-Item $OutWar -Force -ErrorAction SilentlyContinue
-Compress-Archive -Path dist\* -DestinationPath $OutWar -Force
-Write-Host "Created $OutWar"
-
+export function minimalize(html) {
+  return sanitizeHtml(html, {
+    allowedTags: ["a", "br"],
+    allowedAttributes: { a: ["href"] },
+    transformTags: {
+      p: "br", div: "br", li: "br", tr: "br", h1: "br", h2: "br", h3: "br"
+    }
+  }).trim();
+}
