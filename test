@@ -1,13 +1,57 @@
-await Word.run(async (context) => {
-  const sel = context.document.getSelection();
-  const htmlRes = sel.getHtml();
-  await context.sync();
+#!/usr/bin/env bash
+set -euo pipefail
 
-  const doc = new DOMParser().parseFromString(htmlRes.value || "", "text/html");
-  const text = (doc.body?.innerText || "").trim();
-  const links = Array.from(doc.querySelectorAll("a"))
-    .map(a => ({ text: (a.textContent || "").trim(), href: a.getAttribute("href") || "" }))
-    .filter(x => x.href);
+ENV="${1:-dev}"                 # dev | qa | prod
+OUT_WAR="add-in.war"
 
-  
-});
+echo "Building for env: $ENV"
+rm -rf dist && mkdir -p dist
+
+# 1) Bundle TS -> JS (includes external libs like 'marked')
+npx esbuild src/taskpane/taskpane.ts --bundle --minify --sourcemap \
+  --outfile=dist/taskpane.js
+
+# 2) Copy runtime files
+cp src/taskpane/taskpane.html dist/
+cp src/taskpane/taskpane.css  dist/ || true
+[ -d assets ] && cp -R assets dist/assets || true
+[ -d public ] && cp -R public/* dist/ || true
+
+# 3) Copy env config -> dist/config.js
+CFG="src/config/config.$ENV.js"
+[ -f "$CFG" ] || { echo "Missing $CFG"; exit 1; }
+cp "$CFG" dist/config.js
+
+# 4) Package as WAR
+rm -f "$OUT_WAR"
+( cd dist && zip -rq "../$OUT_WAR" . )
+echo "Created $OUT_WAR"
+
+
+param([string]$Env = "dev")  # dev | qa | prod
+$OutWar = "add-in.war"
+
+Write-Host "Building for env: $Env"
+Remove-Item dist -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Path dist | Out-Null
+
+# 1) Bundle TS -> JS
+npx esbuild src\taskpane\taskpane.ts --bundle --minify --sourcemap `
+  --outfile=dist\taskpane.js
+
+# 2) Copy runtime files
+Copy-Item src\taskpane\taskpane.html dist\
+Copy-Item src\taskpane\taskpane.css  dist\ -ErrorAction SilentlyContinue
+if (Test-Path assets) { Copy-Item assets dist\assets -Recurse }
+if (Test-Path public) { Copy-Item public\* dist\ -Recurse }
+
+# 3) Copy env config -> dist/config.js
+$cfg = "src\config\config.$Env.js"
+if (!(Test-Path $cfg)) { throw "Missing $cfg" }
+Copy-Item $cfg "dist\config.js"
+
+# 4) Package as WAR
+Remove-Item $OutWar -Force -ErrorAction SilentlyContinue
+Compress-Archive -Path dist\* -DestinationPath $OutWar -Force
+Write-Host "Created $OutWar"
+
