@@ -1,48 +1,64 @@
 /**
- * ===== Tiny helpers =====
+ * ------------ WORD ------------
  */
-
-// WORD: selection first; if task doesn't require a selection, fall back to whole body.
 async function getWordText(task) {
-  return Word.run(async (context) => {
-    const sel = context.document.getSelection();
+  return Word.run(async (ctx) => {
+    const sel = ctx.document.getSelection();
     sel.load("text");
-    await context.sync();
-    const selected = (sel.text || "").trim();
-    if (selected) return selected;
+    await ctx.sync();
+
+    const s = (sel.text || "").trim();
+    if (s) return s;
 
     if (!task.shouldSelectText) {
-      const body = context.document.body;
+      const body = ctx.document.body;
       body.load("text");
-      await context.sync();
+      await ctx.sync();
       return (body.text || "").trim();
     }
     return "";
   });
 }
 
-// POWERPOINT: selection → selected shapes (incl. tables) → whole deck (if allowed).
+/**
+ * ------------ POWERPOINT ------------
+ * Selection → shapes (incl. tables) → selected slides → whole deck (if allowed)
+ */
 async function getPowerPointText(task) {
-  return PowerPoint.run(async (context) => {
-    // 0) Try direct text selection
-    const tr = context.presentation.getSelectedTextRange();
+  return PowerPoint.run(async (ctx) => {
+    // 1) direct text selection
+    const tr = ctx.presentation.getSelectedTextRange();
     tr.load("text");
-    await context.sync();
-    const direct = (tr.text || "").trim();
-    if (direct) return direct;
+    await ctx.sync();
+    if (tr.text && tr.text.trim()) return tr.text.trim();
 
-    const supports13 = Office.context.requirements.isSetSupported("PowerPointApi", "1.3");
+    const has13 = Office.context.requirements.isSetSupported("PowerPointApi", "1.3");
+    const has14 = Office.context.requirements.isSetSupported("PowerPointApi", "1.4");
 
-    // 1) Selected shapes (covers tables & text frames)
-    if (supports13) {
-      const selectedShapes = context.presentation.getSelectedShapes();
-      const fromSelected = await collectFromShapeCollection(context, selectedShapes);
-      if (fromSelected) return fromSelected;
+    // 2) selected shapes (covers tables + text frames)
+    if (has13) {
+      const shapesSel = ctx.presentation.getSelectedShapes();
+      const textFromShapes = await collectFromShapeCollection(ctx, shapesSel);
+      if (textFromShapes) return textFromShapes;
     }
 
-    // 2) Whole deck (only if selection isn't required)
-    if (!task.shouldSelectText && supports13) {
-      return await collectFromAllSlides(context);
+    // 3) selected slides (works when the user simply clicks a slide)
+    if (has14 && typeof ctx.presentation.getSelectedSlides === "function") {
+      const selSlides = ctx.presentation.getSelectedSlides();
+      selSlides.load("items");
+      await ctx.sync();
+      if (selSlides.items.length) {
+        const textFromSelSlides = await collectFromSlides(ctx, selSlides.items);
+        if (textFromSelSlides) return textFromSelSlides;
+      }
+    }
+
+    // 4) whole deck only when selection not required
+    if (!task.shouldSelectText && has13) {
+      const slides = ctx.presentation.slides;
+      slides.load("items");
+      await ctx.sync();
+      return await collectFromSlides(ctx, slides.items);
     }
 
     return "";
@@ -50,54 +66,76 @@ async function getPowerPointText(task) {
 }
 
 /**
- * Collects text from a ShapeCollection (selected shapes). Safe guards avoid InvalidArgument.
+ * ---- helpers: safe traversals that avoid InvalidArgument ----
  */
-async function collectFromShapeCollection(context, shapeCollection) {
+
+// Selected shapes or any ShapeCollection → gather text & table cell text
+async function collectFromShapeCollection(ctx, shapeCollection) {
   shapeCollection.load("items");
-  await context.sync();
+  await ctx.sync();
   if (!shapeCollection.items.length) return "";
 
-  // Stage A: discover what each shape actually has
-  shapeCollection.items.forEach(sh => sh.load("textFrame,table"));
-  await context.sync();
+  // discover capabilities
+  shapeCollection.items.forEach(sh => safeLoad(sh, "textFrame,table"));
+  await ctx.sync();
 
-  // Stage B: for shapes with textFrame/table, load deeper data
+  // prep deeper loads
   shapeCollection.items.forEach(sh => {
-    if (sh.textFrame) sh.textFrame.load("hasText");
-    if (sh.table) sh.table.rows.load("items");
+    if (sh.textFrame) safeLoad(sh.textFrame, "hasText");
+    if (sh.table) safeLoad(sh.table, "rows");
   });
-  await context.sync();
+  await ctx.sync();
 
-  // Stage C: table rows -> cells (only on actual tables)
+  // rows → cells
   shapeCollection.items.forEach(sh => {
-    if (sh.table) sh.table.rows.items.forEach(r => r.cells.load("items"));
+    if (sh.table && sh.table.rows) {
+      sh.table.rows.load("items");
+    }
   });
-  await context.sync();
+  await ctx.sync();
 
-  // Stage D: now we can safely load text on things we know exist
   shapeCollection.items.forEach(sh => {
-    if (sh.textFrame && sh.textFrame.hasText) sh.textFrame.textRange.load("text");
-    if (sh.table) {
+    if (sh.table && sh.table.rows && sh.table.rows.items) {
+      sh.table.rows.items.forEach(r => safeLoad(r, "cells"));
+    }
+  });
+  await ctx.sync();
+
+  shapeCollection.items.forEach(sh => {
+    if (sh.table && sh.table.rows && sh.table.rows.items) {
+      sh.table.rows.items.forEach(r => {
+        r.cells.load("items");
+      });
+    }
+  });
+  await ctx.sync();
+
+  // now safely load text
+  shapeCollection.items.forEach(sh => {
+    if (sh.textFrame && sh.textFrame.hasText) {
+      safeLoad(sh.textFrame.textRange, "text");
+    }
+    if (sh.table && sh.table.rows && sh.table.rows.items) {
       sh.table.rows.items.forEach(r => {
         r.cells.items.forEach(c => {
-          if (c.textFrame) c.textFrame.textRange.load("text");
+          if (c.textFrame) safeLoad(c.textFrame.textRange, "text");
         });
       });
     }
   });
-  await context.sync();
+  await ctx.sync();
 
-  // Collect
+  // collect
   let out = "";
   for (const sh of shapeCollection.items) {
     if (sh.textFrame && sh.textFrame.hasText) {
       const t = (sh.textFrame.textRange.text || "").trim();
       if (t) out += t + "\n";
     }
-    if (sh.table) {
+    if (sh.table && sh.table.rows && sh.table.rows.items) {
       for (const r of sh.table.rows.items) {
         for (const c of r.cells.items) {
-          const t = (c.textFrame && c.textFrame.textRange.text || "").trim();
+          const t = (c.textFrame && c.textFrame.textRange && c.textFrame.textRange.text || "").trim();
           if (t) out += t + "\n";
         }
       }
@@ -106,67 +144,100 @@ async function collectFromShapeCollection(context, shapeCollection) {
   return out.trim();
 }
 
-/**
- * Collects text from every slide (all shapes + all table cells).
- */
-async function collectFromAllSlides(context) {
-  const slides = context.presentation.slides;
-  slides.load("items");
-  await context.sync();
-  if (!slides.items.length) return "";
+// Slides[] → shapes → text & table cell text
+async function collectFromSlides(ctx, slidesArray) {
+  if (!slidesArray || !slidesArray.length) return "";
 
-  // Load shapes on each slide
-  slides.items.forEach(s => s.shapes.load("items"));
-  await context.sync();
+  // load shapes for each slide
+  slidesArray.forEach(s => safeLoad(s, "shapes"));
+  await ctx.sync();
 
-  // Probe textFrame/table
-  slides.items.forEach(s => {
-    s.shapes.items.forEach(sh => sh.load("textFrame,table"));
+  slidesArray.forEach(s => {
+    if (s.shapes) s.shapes.load("items");
   });
-  await context.sync();
+  await ctx.sync();
 
-  // Load deeper data for those that actually have it
-  slides.items.forEach(s => {
-    s.shapes.items.forEach(sh => {
-      if (sh.textFrame) sh.textFrame.load("hasText");
-      if (sh.table) sh.table.rows.load("items");
-    });
+  // discover per-shape
+  slidesArray.forEach(s => {
+    if (s.shapes && s.shapes.items) {
+      s.shapes.items.forEach(sh => safeLoad(sh, "textFrame,table"));
+    }
   });
-  await context.sync();
+  await ctx.sync();
 
-  slides.items.forEach(s => {
-    s.shapes.items.forEach(sh => {
-      if (sh.table) sh.table.rows.items.forEach(r => r.cells.load("items"));
-    });
+  // prep deeper loads
+  slidesArray.forEach(s => {
+    if (s.shapes && s.shapes.items) {
+      s.shapes.items.forEach(sh => {
+        if (sh.textFrame) safeLoad(sh.textFrame, "hasText");
+        if (sh.table) safeLoad(sh.table, "rows");
+      });
+    }
   });
-  await context.sync();
+  await ctx.sync();
 
-  slides.items.forEach(s => {
-    s.shapes.items.forEach(sh => {
-      if (sh.textFrame && sh.textFrame.hasText) sh.textFrame.textRange.load("text");
-      if (sh.table) {
-        sh.table.rows.items.forEach(r => {
-          r.cells.items.forEach(c => {
-            if (c.textFrame) c.textFrame.textRange.load("text");
+  slidesArray.forEach(s => {
+    if (s.shapes) {
+      s.shapes.items.forEach(sh => {
+        if (sh.table && sh.table.rows) sh.table.rows.load("items");
+      });
+    }
+  });
+  await ctx.sync();
+
+  slidesArray.forEach(s => {
+    if (s.shapes) {
+      s.shapes.items.forEach(sh => {
+        if (sh.table && sh.table.rows && s.shapes) {
+          sh.table.rows.items.forEach(r => safeLoad(r, "cells"));
+        }
+      });
+    }
+  });
+  await ctx.sync();
+
+  slidesArray.forEach(s => {
+    if (s.shapes) {
+      s.shapes.items.forEach(sh => {
+        if (sh.table && sh.table.rows) {
+          sh.table.rows.items.forEach(r => r.cells.load("items"));
+        }
+      });
+    }
+  });
+  await ctx.sync();
+
+  slidesArray.forEach(s => {
+    if (s.shapes) {
+      s.shapes.items.forEach(sh => {
+        if (sh.textFrame && sh.textFrame.hasText) {
+          safeLoad(sh.textFrame.textRange, "text");
+        }
+        if (sh.table && sh.table.rows) {
+          sh.table.rows.items.forEach(r => {
+            r.cells.items.forEach(c => {
+              if (c.textFrame) safeLoad(c.textFrame.textRange, "text");
+            });
           });
-        });
-      }
-    });
+        }
+      });
+    }
   });
-  await context.sync();
+  await ctx.sync();
 
-  // Collect
+  // collect
   let out = "";
-  for (const s of slides.items) {
+  for (const s of slidesArray) {
+    if (!s.shapes) continue;
     for (const sh of s.shapes.items) {
       if (sh.textFrame && sh.textFrame.hasText) {
         const t = (sh.textFrame.textRange.text || "").trim();
         if (t) out += t + "\n";
       }
-      if (sh.table) {
+      if (sh.table && sh.table.rows) {
         for (const r of sh.table.rows.items) {
           for (const c of r.cells.items) {
-            const t = (c.textFrame && c.textFrame.textRange.text || "").trim();
+            const t = (c.textFrame && c.textFrame.textRange && c.textFrame.textRange.text || "").trim();
             if (t) out += t + "\n";
           }
         }
@@ -176,8 +247,13 @@ async function collectFromAllSlides(context) {
   return out.trim();
 }
 
+// Small guard for property loads that may not exist on older builds/shapes.
+function safeLoad(obj, props) {
+  try { if (obj && obj.load) obj.load(props); } catch (_) { /* ignore */ }
+}
+
 /**
- * ===== DROP-IN BUTTON METHOD =====
+ * ------------ BUTTONS ------------
  */
 function setupButtons() {
   for (const buttonId in TASK_CONFIG) {
@@ -195,13 +271,12 @@ function setupButtons() {
         } else if (Office.context.host === Office.HostType.PowerPoint) {
           text = await getPowerPointText(task);
         } else {
-          showMessage("Supported in Word and PowerPoint only.", "error");
+          showMessage("This add-in supports Word and PowerPoint.", "error");
           return;
         }
 
         if (!text && task.shouldSelectText) {
-          // Covers: whole slide selected, no shapes, or APIs not supported
-          showMessage("Please select text or a table in the slide.", "error");
+          showMessage("Select some text, a table, or a slide.", "error");
           return;
         }
 
@@ -213,9 +288,9 @@ function setupButtons() {
           name: task.name,
           skipPromptReview: task.skipPromptReview
         });
-      } catch (e) {
-        console.error(e);
-        showMessage("Error retrieving text. Try a smaller selection or another slide.", "error");
+      } catch (err) {
+        console.error(err);
+        showMessage("Couldn’t read slide content. Try again on a smaller selection.", "error");
       }
     });
   }
