@@ -1,60 +1,33 @@
-// Works for normal ranges AND text inside text boxes.
-async function getWordText(task) {
-  // 1) Try the Word API (fast & rich when the selection is in the doc body)
-  try {
-    return await Word.run(async (context) => {
-      const selection = context.document.getSelection();
-      const html = selection.getHtml();
-      await context.sync();
+// Minimal + maintainable
+async function getWordText(task: { shouldSelectText: boolean; name: string }) {
+  // 1) Get the current selection (works in body and text boxes)
+  const selected = await getSelectionText();
+  if (selected) return selected;
 
-      const selText = minimizeHtml(html.value);
-      if (selText && selText.trim()) return selText;
-
-      // fallback to whole body if that's your current behavior
-      if (!task.shouldSelectText && task.name !== 'AD_HOC') {
-        const body = context.document.body;
-        body.load("text");
-        await context.sync();
-        return (body.text || "").trim();
-      }
-      return "";
+  // 2) Optional fallback: whole body
+  if (!task.shouldSelectText && task.name !== "AD_HOC") {
+    return Word.run(async (ctx) => {
+      const body = ctx.document.body;
+      body.load("text");
+      await ctx.sync();
+      return (body.text || "").trim();
     });
-  } catch (_) {
-    // swallow and try Common API fallback
   }
 
-  // 2) Fallback for selections inside text boxes (shapes)
-  const textFromCommonApi = await new Promise((resolve) => {
-    Office.context.document.getSelectedDataAsync(
-      Office.CoercionType.Text,
-      (res) => resolve(
-        res.status === Office.AsyncResultStatus.Succeeded
-          ? String(res.value || "").trim()
-          : ""
-      )
-    );
-  });
-  if (textFromCommonApi) return textFromCommonApi;
-
-  // 3) Optional: if nothing is selected but you still want text that lives
-  //    in text boxes anywhere in the document, parse it from the document OOXML.
-  //    (Useful when the user only selects the box object, not its text.)
-  return await Word.run(async (context) => {
-    const ooxml = context.document.body.getOoxml();
-    await context.sync();
-    return extractTextFromTextBoxes(ooxml.value).trim();
-  });
+  return "";
 }
 
-// Extracts plain text from all <w:txbxContent> (text boxes) in a chunk of OOXML.
-function extractTextFromTextBoxes(ooxml) {
-  const doc = new DOMParser().parseFromString(ooxml, "application/xml");
-  const boxes = Array.from(doc.getElementsByTagName("w:txbxContent"));
-  const parts = [];
-  boxes.forEach((box) => {
-    const runs = box.getElementsByTagName("w:t");
-    const text = Array.from(runs).map(n => n.textContent).join("");
-    if (text.trim()) parts.push(text);
+function getSelectionText(): Promise<string> {
+  return new Promise((resolve) => {
+    Office.context.document.getSelectedDataAsync(
+      Office.CoercionType.Text, // change to Html if you prefer, see note below
+      (res) => {
+        if (res.status === Office.AsyncResultStatus.Succeeded) {
+          resolve(String(res.value || "").trim());
+        } else {
+          resolve("");
+        }
+      }
+    );
   });
-  return parts.join("\n");
 }
