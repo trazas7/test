@@ -1,33 +1,33 @@
-// Minimal, HTML-first (keeps hyperlinks)
+// Returns the selected HTML (keeps hyperlinks). Works in body + text boxes.
+// Falls back to whole-body *plain text* only if you need it.
+async function getWordHtml(task: { shouldSelectText: boolean; name: string }) {
+  const html = await getSelectionHtml();      // selection first (keeps links)
+  if (html) return html;
 
-async function getWordText(task: { shouldSelectText: boolean; name: string }) {
-  // 1) Selection (works in text boxes too)
-  const selHtml = await getSelectionHtml();
-  const minimizedSel = minimizeHtml(selHtml || "");
-  if (minimizedSel?.trim()) return minimizedSel;
-
-  // 2) Optional fallback: entire document body (as HTML)
   if (!task.shouldSelectText && task.name !== "AD_HOC") {
     return Word.run(async (ctx) => {
-      const bodyHtml = ctx.document.body.getHtml();
+      const body = ctx.document.body;
+      body.load("text");
       await ctx.sync();
-      return minimizeHtml(bodyHtml.value || "");
+      return (body.text || "").trim();        // simple fallback, no links
     });
   }
-
   return "";
 }
 
-// Small helper: Common API (handles text boxes)
 function getSelectionHtml(): Promise<string> {
   return new Promise((resolve) => {
     Office.context.document.getSelectedDataAsync(
       Office.CoercionType.Html,
-      (res) => resolve(
-        res.status === Office.AsyncResultStatus.Succeeded
-          ? String(res.value || "")
-          : ""
-      )
+      (res) => {
+        if (res.status === Office.AsyncResultStatus.Succeeded) {
+          // if you already have minimizeHtml, keep using it to trim wrappers
+          const val = String(res.value || "");
+          resolve(val ? minimizeHtml(val) : "");
+        } else {
+          resolve("");
+        }
+      }
     );
   });
 }
