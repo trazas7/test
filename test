@@ -1,33 +1,70 @@
-// Returns the selected HTML (keeps hyperlinks). Works in body + text boxes.
-// Falls back to whole-body *plain text* only if you need it.
-async function getWordHtml(task: { shouldSelectText: boolean; name: string }) {
-  const html = await getSelectionHtml();      // selection first (keeps links)
-  if (html) return html;
+} else if (Office.context.host === Office.HostType.PowerPoint) {
+  await PowerPoint.run(async (context) => {
+    let text = "";
 
-  if (!task.shouldSelectText && task.name !== "AD_HOC") {
-    return Word.run(async (ctx) => {
-      const body = ctx.document.body;
-      body.load("text");
-      await ctx.sync();
-      return (body.text || "").trim();        // simple fallback, no links
-    });
-  }
-  return "";
-}
+    const pres = context.presentation;
 
-function getSelectionHtml(): Promise<string> {
-  return new Promise((resolve) => {
-    Office.context.document.getSelectedDataAsync(
-      Office.CoercionType.Html,
-      (res) => {
-        if (res.status === Office.AsyncResultStatus.Succeeded) {
-          // if you already have minimizeHtml, keep using it to trim wrappers
-          const val = String(res.value || "");
-          resolve(val ? minimizeHtml(val) : "");
-        } else {
-          resolve("");
+    // Try to read the selected text range (PowerPointApi 1.5+)
+    let range: PowerPoint.TextRange | undefined;
+    if (Office.context.requirements.isSetSupported("PowerPointApi", "1.5")) {
+      range = pres.getSelectedTextRangeOrNullObject();
+      range!.load(["text", "isNullObject"]);
+    }
+
+    // Also track selected slides so we can (a) fall back to slide text and (b) pull hyperlinks
+    const selectedSlides = pres.getSelectedSlides();
+    selectedSlides.load("items");
+    await context.sync();
+
+    if (range && !range.isNullObject) {
+      text = (range.text || "").trim();
+    } else if (!task.shouldSelectText && task.name !== "AD_HOC") {
+      // Fallback: collect all text on the first selected slide
+      if (selectedSlides.items.length > 0) {
+        const slide = selectedSlides.getItemAt(0);
+        const shapes = slide.shapes;
+        shapes.load("items");
+        await context.sync();
+
+        // Load text for shapes that actually have text
+        for (const shape of shapes.items) {
+          shape.textFrame.load("hasText");
         }
+        await context.sync();
+        for (const shape of shapes.items) {
+          if (shape.textFrame.hasText) {
+            shape.textFrame.textRange.load("text");
+          }
+        }
+        await context.sync();
+
+        text = shapes.items
+          .map(s => (s.textFrame.hasText ? s.textFrame.textRange.text : ""))
+          .filter(Boolean)
+          .join("\n")
+          .trim();
       }
-    );
+    }
+
+    // Append slide hyperlinks (PowerPointApi 1.6+) as a footnote list so your LLM gets the URLs
+    let refs = "";
+    if (
+      Office.context.requirements.isSetSupported("PowerPointApi", "1.6") &&
+      selectedSlides.items.length > 0
+    ) {
+      const slide = selectedSlides.getItemAt(0);
+      const links = slide.hyperlinks.load("address,screenTip");
+      await context.sync();
+
+      if (links.items.length > 0) {
+        refs =
+          "\n\nReferences:\n" +
+          links.items
+            .map((l, i) => `[${i + 1}] ${l.address}${l.screenTip ? ` (${l.screenTip})` : ""}`)
+            .join("\n");
+      }
+    }
+
+    selectedText = (text + refs).trim();
   });
 }
