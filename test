@@ -1,70 +1,63 @@
 } else if (Office.context.host === Office.HostType.PowerPoint) {
-  await PowerPoint.run(async (context) => {
-    let text = "";
-
-    const pres = context.presentation;
-
-    // Try to read the selected text range (PowerPointApi 1.5+)
-    let range: PowerPoint.TextRange | undefined;
-    if (Office.context.requirements.isSetSupported("PowerPointApi", "1.5")) {
-      range = pres.getSelectedTextRangeOrNullObject();
-      range!.load(["text", "isNullObject"]);
-    }
-
-    // Also track selected slides so we can (a) fall back to slide text and (b) pull hyperlinks
-    const selectedSlides = pres.getSelectedSlides();
-    selectedSlides.load("items");
-    await context.sync();
-
-    if (range && !range.isNullObject) {
-      text = (range.text || "").trim();
-    } else if (!task.shouldSelectText && task.name !== "AD_HOC") {
-      // Fallback: collect all text on the first selected slide
-      if (selectedSlides.items.length > 0) {
-        const slide = selectedSlides.getItemAt(0);
-        const shapes = slide.shapes;
-        shapes.load("items");
-        await context.sync();
-
-        // Load text for shapes that actually have text
-        for (const shape of shapes.items) {
-          shape.textFrame.load("hasText");
+    await PowerPoint.run(async (context) => {
+        try {
+            if (task.shouldSelectText || task.name === 'AD_HOC') {
+                // Get active slide
+                const activeSlide = context.presentation.slides.getActiveSlide();
+                const shapes = activeSlide.shapes;
+                shapes.load("items");
+                await context.sync();
+                
+                // Since PowerPoint doesn't have easy text selection detection,
+                // you might need to get text from all shapes and let user specify
+                // or implement a different selection mechanism
+                
+                let combinedText = "";
+                
+                for (let shape of shapes.items) {
+                    if (shape.type === "GeometricShape" || shape.type === "TextBox") {
+                        shape.load("textFrame");
+                        await context.sync();
+                        
+                        if (shape.textFrame && shape.textFrame.hasText) {
+                            const textRange = shape.textFrame.textRange;
+                            const hyperlinks = textRange.hyperlinks;
+                            
+                            textRange.load("text");
+                            hyperlinks.load("items");
+                            await context.sync();
+                            
+                            let shapeText = textRange.text;
+                            
+                            // Process hyperlinks
+                            for (let i = 0; i < hyperlinks.items.length; i++) {
+                                const hyperlink = hyperlinks.items[i];
+                                hyperlink.load(["textToDisplay", "address", "range"]);
+                            }
+                            
+                            await context.sync();
+                            
+                            for (let i = hyperlinks.items.length - 1; i >= 0; i--) {
+                                const hyperlink = hyperlinks.items[i];
+                                const range = hyperlink.range;
+                                range.load(["start", "length"]);
+                                await context.sync();
+                                
+                                const before = shapeText.substring(0, range.start);
+                                const after = shapeText.substring(range.start + range.length);
+                                shapeText = before + `<a href="${hyperlink.address}">${hyperlink.textToDisplay}</a>` + after;
+                            }
+                            
+                            combinedText += shapeText + "\n";
+                        }
+                    }
+                }
+                
+                selectedText = combinedText.trim();
+            }
+            // ... rest of your code
+        } catch (error) {
+            console.error("PowerPoint error:", error);
         }
-        await context.sync();
-        for (const shape of shapes.items) {
-          if (shape.textFrame.hasText) {
-            shape.textFrame.textRange.load("text");
-          }
-        }
-        await context.sync();
-
-        text = shapes.items
-          .map(s => (s.textFrame.hasText ? s.textFrame.textRange.text : ""))
-          .filter(Boolean)
-          .join("\n")
-          .trim();
-      }
-    }
-
-    // Append slide hyperlinks (PowerPointApi 1.6+) as a footnote list so your LLM gets the URLs
-    let refs = "";
-    if (
-      Office.context.requirements.isSetSupported("PowerPointApi", "1.6") &&
-      selectedSlides.items.length > 0
-    ) {
-      const slide = selectedSlides.getItemAt(0);
-      const links = slide.hyperlinks.load("address,screenTip");
-      await context.sync();
-
-      if (links.items.length > 0) {
-        refs =
-          "\n\nReferences:\n" +
-          links.items
-            .map((l, i) => `[${i + 1}] ${l.address}${l.screenTip ? ` (${l.screenTip})` : ""}`)
-            .join("\n");
-      }
-    }
-
-    selectedText = (text + refs).trim();
-  });
+    });
 }
