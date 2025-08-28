@@ -1,160 +1,141 @@
-// Import JSZip in your task pane bundle
+// Import JSZip in your bundle
 import JSZip from "jszip";
 
 } else if (Office.context.host === Office.HostType.PowerPoint) {
   await PowerPoint.run(async (context) => {
     const pres = context.presentation;
 
-    // 1) Selected text + slide index
+    // Selection + the selected slide’s ID
     const sel = pres.getSelectedTextRangeOrNullObject();
     const selectedSlides = pres.getSelectedSlides();
+    const firstSelected = selectedSlides.getItemAt(0);
+
     sel.load(["text", "isNullObject"]);
-    selectedSlides.load("items");
+    firstSelected.load("id");           // <-- use id, not index
     await context.sync();
 
-    if (sel.isNullObject || selectedSlides.items.length === 0) {
-      selectedText = "";   // nothing selected
-      return;
-    }
+    if (sel.isNullObject) { selectedText = ""; return; }
     const selectedTextRaw = sel.text || "";
-    const slideIndex = selectedSlides.items[0].index; // 1-based
+    const slideId = firstSelected.id;   // e.g., "256" (p:sldId/@id)
 
-    // 2) Read the .pptx as a zip blob
     const zipBlob = await getPptxZipBlob();
-    if (!zipBlob) {
-      selectedText = selectedTextRaw; // fallback
-      return;
-    }
+    if (!zipBlob) { selectedText = selectedTextRaw; return; }
 
-    // 3) Parse slide XML + rels and get the run stream for this slide
-    const segments = await getSlideSegmentsWithLinks(zipBlob, slideIndex);
-    if (!segments.length) {
-      selectedText = selectedTextRaw; // fallback
-      return;
-    }
-
-    // 4) Slice the run stream to the selected text only
-    const html = selectionToHtml(segments, selectedTextRaw);
-
-    // 5) Use the HTML (send this to your LLM)
+    const html = await selectionHtmlFromSlideId(zipBlob, slideId, selectedTextRaw);
     selectedText = html || selectedTextRaw;
   });
 }
 
-/* ---------- helpers ---------- */
+/* ----------------- helpers ----------------- */
 
-// Pull the whole file as a zip we can parse
+// Pull the .pptx contents as a ZIP blob
 function getPptxZipBlob(): Promise<Blob | null> {
   return new Promise((resolve) => {
     Office.context.document.getFileAsync(
-      Office.FileType.Compressed,
-      { sliceSize: 4_000_000 },
+      Office.FileType.Compressed, { sliceSize: 4_000_000 },
       (res) => {
         if (res.status !== Office.AsyncResultStatus.Succeeded) return resolve(null);
-        const file = res.value;
-        const chunks: Uint8Array[] = [];
+        const file = res.value, chunks: Uint8Array[] = [];
         let i = 0;
-        const read = () =>
-          file.getSliceAsync(i, (r) => {
-            if (r.status !== Office.AsyncResultStatus.Succeeded) {
-              file.closeAsync(); return resolve(null);
-            }
-            chunks.push(new Uint8Array(r.value.data));
-            if (++i < file.sliceCount) return read();
-            file.closeAsync();
-            resolve(new Blob(chunks, { type: "application/zip" }));
-          });
+        const read = () => file.getSliceAsync(i, (r) => {
+          if (r.status !== Office.AsyncResultStatus.Succeeded) { file.closeAsync(); return resolve(null); }
+          chunks.push(new Uint8Array(r.value.data));
+          if (++i < file.sliceCount) return read();
+          file.closeAsync();
+          resolve(new Blob(chunks, { type: "application/zip" }));
+        });
         read();
       }
     );
   });
 }
 
-// Build a linear stream of {text, href|null} for slideN
-async function getSlideSegmentsWithLinks(zipBlob: Blob, slideIndex: number) {
+async function selectionHtmlFromSlideId(zipBlob: Blob, slideId: string, selected: string) {
   const zip = await JSZip.loadAsync(zipBlob);
-  const slidePath = `ppt/slides/slide${slideIndex}.xml`;
-  const relsPath  = `ppt/slides/_rels/slide${slideIndex}.xml.rels`;
 
-  const slideXml = await zip.file(slidePath)?.async("text");
-  const relsXml  = await zip.file(relsPath)?.async("text");
-  if (!slideXml || !relsXml) return [];
+  // Map slideId -> 'ppt/slides/slideN.xml'
+  const presXml   = await zip.file("ppt/presentation.xml")?.async("text");
+  const presRels  = await zip.file("ppt/_rels/presentation.xml.rels")?.async("text");
+  if (!presXml || !presRels) return "";
 
-  const relsDoc = new DOMParser().parseFromString(relsXml, "application/xml");
-  const rIdToTarget = new Map<string, string | null>();
-  for (const rel of Array.from(relsDoc.getElementsByTagName("Relationship"))) {
-    rIdToTarget.set(rel.getAttribute("Id")!, rel.getAttribute("Target"));
-  }
-
-  const nsA = "http://schemas.openxmlformats.org/drawingml/2006/main";
+  const nsP = "http://schemas.openxmlformats.org/presentationml/2006/main";
   const nsR = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
-  const doc = new DOMParser().parseFromString(slideXml, "application/xml");
 
-  // Gather text runs in reading order
-  const runs = Array.from(doc.getElementsByTagNameNS(nsA, "r"));
-  const segments: { text: string; href: string | null }[] = [];
+  const presDoc = new DOMParser().parseFromString(presXml, "application/xml");
+  const relsDoc = new DOMParser().parseFromString(presRels, "application/xml");
 
-  for (const r of runs) {
-    const tNode = r.getElementsByTagNameNS(nsA, "t")[0];
-    const text = tNode?.textContent ?? "";
-    // detect hyperlink on this run
-    const rPr = r.getElementsByTagNameNS(nsA, "rPr")[0];
-    const h = rPr?.getElementsByTagNameNS(nsA, "hlinkClick")[0];
-    const rid = h?.getAttributeNS(nsR, "id") || null;
-    const href = rid ? (rIdToTarget.get(rid) || null) : null;
-    segments.push({ text, href });
+  // rId -> Target (e.g., 'slides/slide3.xml')
+  const ridToTarget = new Map<string, string>();
+  for (const rel of Array.from(relsDoc.getElementsByTagName("Relationship"))) {
+    ridToTarget.set(rel.getAttribute("Id")!, rel.getAttribute("Target")!);
   }
 
-  // Treat <a:br/> line breaks as plain '\n'
-  for (const br of Array.from(doc.getElementsByTagNameNS(nsA, "br"))) {
-    // (Optional) If you want exact placement of line breaks,
-    // insert synthetic segments where needed.
-  }
+  // find the p:sldId with @id == slideId and get its r:id
+  const sldIds = Array.from(presDoc.getElementsByTagNameNS(nsP, "sldId"));
+  const sld = sldIds.find(n => n.getAttribute("id") === slideId);
+  if (!sld) return "";
 
-  return segments;
-}
+  const rid = sld.getAttributeNS(nsR, "id");
+  const relTarget = rid ? ridToTarget.get(rid) : null;
+  if (!relTarget) return "";
 
-// Turn only the selected portion of the slide into HTML
-function selectionToHtml(
-  segments: { text: string; href: string | null }[],
-  selected: string
-): string {
-  if (!selected) return "";
+  const slidePath = `ppt/${relTarget}`; // e.g., 'ppt/slides/slide3.xml'
 
-  const full = segments.map(s => s.text).join("");
-  let start = full.indexOf(selected);
-  if (start < 0) {
-    // Try a whitespace-normalized match as a backup
-    const norm = (s: string) => s.replace(/\s+/g, " ");
-    const fullN = norm(full), selN = norm(selected);
-    start = fullN.indexOf(selN);
-    if (start < 0) return ""; // give up
-    // Map normalized start back to raw start (approximate)
-    start = mapNormalizedIndex(full, start);
-  }
+  // Build segments (text + href) for this slide, then slice to selection and render HTML
+  const segments = await getSegmentsForSlide(zip, slidePath);
+  if (!segments.length) return "";
 
-  const sliced = sliceSegments(segments, start, selected.length);
+  const sliced = sliceBySelectedText(segments, selected);
   return renderHtml(sliced);
 }
 
-// Slice a run stream by absolute char range [start, start+len)
-function sliceSegments(
+async function getSegmentsForSlide(zip: JSZip, slidePath: string) {
+  const slideXml = await zip.file(slidePath)?.async("text");
+  const relsXml  = await zip.file(slidePath.replace("slides/", "slides/_rels/") + ".rels")?.async("text");
+  if (!slideXml || !relsXml) return [];
+
+  const nsA = "http://schemas.openxmlformats.org/drawingml/2006/main";
+  const nsR = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+
+  const relsDoc = new DOMParser().parseFromString(relsXml, "application/xml");
+  const rIdToTarget = new Map<string, string>();
+  for (const r of Array.from(relsDoc.getElementsByTagName("Relationship"))) {
+    rIdToTarget.set(r.getAttribute("Id")!, r.getAttribute("Target")!);
+  }
+
+  const doc = new DOMParser().parseFromString(slideXml, "application/xml");
+  const runs = Array.from(doc.getElementsByTagNameNS(nsA, "r"));
+
+  const segments: { text: string; href: string | null }[] = [];
+  for (const r of runs) {
+    const tNode = r.getElementsByTagNameNS(nsA, "t")[0];
+    const text = tNode?.textContent ?? "";
+    const rPr = r.getElementsByTagNameNS(nsA, "rPr")[0];
+    const h = rPr?.getElementsByTagNameNS(nsA, "hlinkClick")[0];
+    const rid = h?.getAttributeNS(nsR, "id") || null;
+    const href = rid ? rIdToTarget.get(rid) || null : null;
+    segments.push({ text, href });
+  }
+  return segments;
+}
+
+function sliceBySelectedText(
   segments: { text: string; href: string | null }[],
-  start: number,
-  len: number
+  selected: string
 ) {
+  const full = segments.map(s => s.text).join("");
+  let start = full.indexOf(selected);
+  if (start < 0) return [];
+
   const out: { text: string; href: string | null }[] = [];
-  let pos = 0;
-  let remain = len;
+  let pos = 0, remain = selected.length;
 
   for (const seg of segments) {
     if (remain <= 0) break;
     const end = pos + seg.text.length;
-
-    if (end > start && pos < start + len) {
-      // overlap
+    if (end > start && pos < start + selected.length) {
       const from = Math.max(0, start - pos);
-      const to = Math.min(seg.text.length, start + len - pos);
+      const to = Math.min(seg.text.length, start + selected.length - pos);
       const piece = seg.text.slice(from, to);
       if (piece) out.push({ text: piece, href: seg.href });
       remain -= (to - from);
@@ -165,38 +146,12 @@ function sliceSegments(
 }
 
 function renderHtml(segments: { text: string; href: string | null }[]) {
+  const escape = (s: string) =>
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;")
+     .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const escapeAttr = (s: string) =>
+    s.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
   return segments
-    .map(s => (s.href
-      ? `<a href="${escapeHtmlAttr(s.href)}">${escapeHtml(s.text)}</a>`
-      : escapeHtml(s.text)))
+    .map(s => s.href ? `<a href="${escapeAttr(s.href)}">${escape(s.text)}</a>` : escape(s.text))
     .join("");
-}
-
-function escapeHtml(s: string) {
-  return s
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-function escapeHtmlAttr(s: string) {
-  // minimal attr escaping
-  return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
-}
-
-// map index in "whitespace collapsed" string back to raw string index (best-effort)
-function mapNormalizedIndex(raw: string, normIdx: number) {
-  let iRaw = 0, iNorm = 0, inWS = false;
-  while (iRaw < raw.length) {
-    const ch = raw[iRaw];
-    if (/\s/.test(ch)) {
-      if (!inWS) {
-        if (iNorm === normIdx) return iRaw;
-        iNorm++; inWS = true;
-      }
-    } else {
-      if (iNorm === normIdx) return iRaw;
-      iNorm++; inWS = false;
-    }
-    iRaw++;
-  }
-  return raw.length;
 }
