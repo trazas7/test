@@ -1,208 +1,121 @@
-// needs JSZip in your task pane bundle
-import JSZip from "jszip";
+// -----------------------------------------------------
+// Small helpers
+// -----------------------------------------------------
 
-} else if (Office.context.host === Office.HostType.PowerPoint) {
-  await PowerPoint.run(async (context) => {
-    const pres = context.presentation;
+const AD_HOC = "AD_HOC";
 
-    // 1) Get selection, selected slide id, and the selected text shape
-    const sel = pres.getSelectedTextRangeOrNullObject();
-    const selectedSlides = pres.getSelectedSlides();
-    const firstSlide = selectedSlides.getItemAt(0);
-    const selectedShapes = pres.getSelectedShapes();
-
-    sel.load(["text", "isNullObject", "length"]);
-    firstSlide.load("id");                 // use slide id, not index
-    selectedShapes.load("items");
-    await context.sync();
-
-    if (sel.isNullObject || selectedShapes.items.length === 0) {
-      selectedText = ""; return;
-    }
-
-    // Find the text-bearing shape that contains the selection
-    let focusShape: PowerPoint.Shape | null = null;
-    for (const s of selectedShapes.items) {
-      s.load("id");
-      s.textFrame.load("hasText");
-    }
-    await context.sync();
-
-    for (const s of selectedShapes.items) {
-      if (!s.textFrame.hasText) continue;
-      s.textFrame.textRange.load("text");
-    }
-    await context.sync();
-
-    const selectedRaw = sel.text || "";
-    for (const s of selectedShapes.items) {
-      const t = s.textFrame.hasText ? (s.textFrame.textRange.text || "") : "";
-      if (t && t.indexOf(selectedRaw) !== -1) { focusShape = s; break; }
-    }
-    if (!focusShape) {
-      // fallback: raw text only
-      selectedText = selectedRaw; return;
-    }
-
-    const slideId = firstSlide.id;
-    const shapeId = focusShape.id;                // this maps to cNvPr/@id in XML
-    const shapeText = focusShape.textFrame.textRange.text || "";
-
-    // 2) Pull the .pptx and map slideId -> ppt/slides/slideN.xml
-    const zipBlob = await getPptxZipBlob();
-    if (!zipBlob) { selectedText = selectedRaw; return; }
-
-    const html = await selectionHtmlFromShape(zipBlob, slideId, shapeId, selectedRaw, shapeText);
-    selectedText = html || selectedRaw;
-  });
+function buildPromptText(task, selectedText) {
+  return selectedText ? `${task.prompt}:\n${selectedText}` : null;
 }
 
-/* ---------------- helpers ---------------- */
+function requireSelectionIfNeeded(task, selectedText) {
+  if (!selectedText && task.shouldSelectText) {
+    showMessage("Please select text in the document first.", "error");
+    return true; // signal caller to stop
+  }
+  return false;
+}
 
-function getPptxZipBlob(): Promise<Blob | null> {
-  return new Promise((resolve) => {
-    Office.context.document.getFileAsync(
-      Office.FileType.Compressed, { sliceSize: 4_000_000 },
-      (res) => {
-        if (res.status !== Office.AsyncResultStatus.Succeeded) return resolve(null);
-        const file = res.value, chunks: Uint8Array[] = [];
-        let i = 0;
-        const read = () => file.getSliceAsync(i, (r) => {
-          if (r.status !== Office.AsyncResultStatus.Succeeded) { file.closeAsync(); return resolve(null); }
-          chunks.push(new Uint8Array(r.value.data));
-          if (++i < file.sliceCount) return read();
-          file.closeAsync();
-          resolve(new Blob(chunks, { type: "application/zip" }));
-        });
-        read();
+// ---- Word ----
+async function getWordText(context, task) {
+  let selectedText = "";
+
+  // try selection HTML first (keeps basic formatting if you later need it)
+  try {
+    const selection = context.document.getSelection();
+    const html = selection.getHtml();
+    await context.sync();
+    const cleanedHtml = minimizeHtml ? minimizeHtml(html.value) : html.value;
+    if (cleanedHtml) selectedText = cleanedHtml.trim();
+  } catch (_) { /* selection may not have HTML, ignore */ }
+
+  // fall back to whole doc when allowed
+  if (!selectedText && !task.shouldSelectText && task.name !== AD_HOC) {
+    const body = context.document.body;
+    body.load("text");
+    await context.sync();
+    selectedText = (body.text || "").trim();
+  }
+  return selectedText;
+}
+
+// ---- PowerPoint ----
+async function getPowerPointText(context, task) {
+  let selectedText = "";
+
+  // 1) try the user's selection
+  const selection = context.presentation.getSelectedTextRange();
+  selection.load("text");
+  await context.sync();
+  const selText = (selection.text || "").trim();
+  if (selText) return selText;
+
+  // 2) fall back to all slide text when allowed
+  if (!task.shouldSelectText && task.name !== AD_HOC) {
+    const slides = context.presentation.slides;
+    slides.load("items");
+    await context.sync();
+
+    let fullText = "";
+    for (const slide of slides.items) {
+      const shapes = slide.shapes;
+      shapes.load("items");
+      await context.sync();
+
+      // load text ranges
+      for (const shape of shapes.items) {
+        if (shape.textFrame) shape.textFrame.textRange.load("text");
       }
-    );
-  });
-}
+      await context.sync();
 
-async function selectionHtmlFromShape(
-  zipBlob: Blob,
-  slideId: string,
-  shapeId: string,
-  selectedRaw: string,
-  shapeText: string
-) {
-  const zip = await JSZip.loadAsync(zipBlob);
-
-  // Map slideId -> 'ppt/slides/slideN.xml'
-  const presXml  = await zip.file("ppt/presentation.xml")?.async("text");
-  const presRels = await zip.file("ppt/_rels/presentation.xml.rels")?.async("text");
-  if (!presXml || !presRels) return "";
-
-  const nsP = "http://schemas.openxmlformats.org/presentationml/2006/main";
-  const nsR = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
-
-  const presDoc = new DOMParser().parseFromString(presXml, "application/xml");
-  const relsDoc = new DOMParser().parseFromString(presRels, "application/xml");
-  const ridToTarget = new Map<string, string>();
-  for (const rel of Array.from(relsDoc.getElementsByTagName("Relationship"))) {
-    ridToTarget.set(rel.getAttribute("Id")!, rel.getAttribute("Target")!);
-  }
-  const sld = Array.from(presDoc.getElementsByTagNameNS(nsP, "sldId"))
-    .find(n => n.getAttribute("id") === slideId);
-  if (!sld) return "";
-  const rid = sld.getAttributeNS(nsR, "id");
-  const slidePath = rid ? `ppt/${ridToTarget.get(rid)}` : "";
-  if (!slidePath) return "";
-
-  // Build segments for THIS SHAPE only
-  const segments = await getSegmentsForShape(zip, slidePath, shapeId);
-
-  if (!segments.length) return "";
-
-  // Locate selection inside the shape text (not the whole slide)
-  const start = shapeText.indexOf(selectedRaw);
-  if (start < 0) return "";
-
-  // Slice segments to [start, start+len) relative to the shape
-  const sliced = sliceByRange(segments, start, selectedRaw.length);
-  return renderHtml(sliced);
-}
-
-async function getSegmentsForShape(zip: JSZip, slidePath: string, shapeId: string) {
-  const slideXml = await zip.file(slidePath)?.async("text");
-  const relsXml  = await zip.file(slidePath.replace("slides/", "slides/_rels/") + ".rels")?.async("text");
-  if (!slideXml || !relsXml) return [];
-
-  const nsP = "http://schemas.openxmlformats.org/presentationml/2006/main";
-  const nsA = "http://schemas.openxmlformats.org/drawingml/2006/main";
-  const nsR = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
-
-  const relsDoc = new DOMParser().parseFromString(relsXml, "application/xml");
-  const rIdToTarget = new Map<string, string>();
-  for (const r of Array.from(relsDoc.getElementsByTagName("Relationship"))) {
-    rIdToTarget.set(r.getAttribute("Id")!, r.getAttribute("Target")!);
-  }
-
-  const doc = new DOMParser().parseFromString(slideXml, "application/xml");
-
-  // Find the p:sp node for this shapeId
-  const shapes = Array.from(doc.getElementsByTagNameNS(nsP, "sp"));
-  const shapeNode = shapes.find(sp => {
-    const cNvPr = sp.getElementsByTagNameNS(nsP, "cNvPr")[0];
-    return cNvPr && cNvPr.getAttribute("id") === String(shapeId);
-  });
-  if (!shapeNode) return [];
-
-  const segments: { text: string; href: string | null }[] = [];
-  // Detect a shape-level hyperlink (if any). If found, it applies to all runs without their own link.
-  let shapeHref: string | null = null;
-  const anyH = shapeNode.getElementsByTagNameNS(nsA, "hlinkClick")[0];
-  if (anyH) {
-    const rid = anyH.getAttributeNS(nsR, "id");
-    if (rid && rIdToTarget.has(rid)) shapeHref = rIdToTarget.get(rid)!;
-  }
-
-  // Iterate text runs within this shape
-  const runs = Array.from(shapeNode.getElementsByTagNameNS(nsA, "r"));
-  for (const r of runs) {
-    const tNode = r.getElementsByTagNameNS(nsA, "t")[0];
-    const text = tNode?.textContent ?? "";
-    const rPr = r.getElementsByTagNameNS(nsA, "rPr")[0];
-    const h = rPr?.getElementsByTagNameNS(nsA, "hlinkClick")[0];
-    const rid = h?.getAttributeNS(nsR, "id") || null;
-    const href = rid ? (rIdToTarget.get(rid) || null) : (shapeHref || null);
-    segments.push({ text, href });
-  }
-
-  return segments;
-}
-
-function sliceByRange(
-  segments: { text: string; href: string | null }[],
-  start: number,
-  len: number
-) {
-  const out: { text: string; href: string | null }[] = [];
-  let pos = 0, remain = len;
-
-  for (const seg of segments) {
-    if (remain <= 0) break;
-    const end = pos + seg.text.length;
-    if (end > start && pos < start + len) {
-      const from = Math.max(0, start - pos);
-      const to = Math.min(seg.text.length, start + len - pos);
-      const piece = seg.text.slice(from, to);
-      if (piece) out.push({ text: piece, href: seg.href });
-      remain -= (to - from);
+      // collect text
+      for (const shape of shapes.items) {
+        if (shape.textFrame) {
+          const t = (shape.textFrame.textRange.text || "").trim();
+          if (t) fullText += t + "\n";
+        }
+      }
     }
-    pos = end;
+    selectedText = fullText.trim();
   }
-  return out;
+
+  return selectedText;
 }
 
-function renderHtml(segments: { text: string; href: string | null }[]) {
-  const esc = (s: string) =>
-    s.replace(/&/g, "&amp;").replace(/</g, "&lt;")
-     .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  const escAttr = (s: string) =>
-    s.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
-  return segments
-    .map(s => s.href ? `<a href="${escAttr(s.href)}">${esc(s.text)}</a>` : esc(s.text))
-    .join("");
+// Host router
+async function getSelectedText(task) {
+  if (Office.context.host === Office.HostType.Word) {
+    return Word.run(ctx => getWordText(ctx, task));
+  }
+  if (Office.context.host === Office.HostType.PowerPoint) {
+    return PowerPoint.run(ctx => getPowerPointText(ctx, task));
+  }
+  return "";
+}
+
+// -----------------------------------------------------
+// Button wiring (clean!)
+// -----------------------------------------------------
+function setupButtons() {
+  for (const buttonId in TASK_CONFIG) {
+    getElementById(buttonId).addEventListener("click", async () => {
+      const task = TASK_CONFIG[buttonId];
+      currentTask = task.name;
+
+      try {
+        const selectedText = await getSelectedText(task);
+        if (requireSelectionIfNeeded(task, selectedText)) return;
+
+        const promptText = buildPromptText(task, selectedText);
+        showPromptScreen({
+          heading: task.heading,
+          prompt: promptText,
+          name: task.name,
+          skipPromptReview: task.skipPromptReview
+        });
+      } catch (err) {
+        showMessage("Error retrieving selected text from document.", "error");
+      }
+    });
+  }
 }
