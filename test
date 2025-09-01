@@ -1,64 +1,97 @@
-// Replace with your own UI toast if you have one.
-function notify(msg: string) {
-  console.log("[INFO]", msg);
-}
-
 async function getPptSelectedOrFullText(task: any): Promise<string> {
   return await PowerPoint.run(async (ctx) => {
-    // 1) Shapes first — detect tables and bail with a hint
-    const selShapes = ctx.presentation.getSelectedShapes();
-    selShapes.load("items");
-    await ctx.sync();
-    console.log("[DBG] selectedShapes.count:", selShapes.items.length);
-
-    selShapes.items.forEach(s => s.load("id,name,type"));
-    await ctx.sync();
-
-    for (const s of selShapes.items as any[]) {
-      console.log("[DBG] visiting shape", { id: s.id, name: s.name, type: s.type });
-
-      if (s.type === "Table") {
-        // Don’t touch s.table.* — it's undefined on many builds.
-        notify("Click **inside** a table cell so the text cursor is blinking, then select the text (or press Ctrl+A to select that cell) and run again.");
-        // keep going; maybe user also has a text selection
-      } else {
-        // Text boxes/placeholders
-        try {
-          s.load("textFrame/hasText,textFrame/textRange/text");
-          await ctx.sync();
-          if (s.textFrame?.hasText && s.textFrame?.textRange?.text) {
-            const t = (s.textFrame.textRange.text || "").trim();
-            if (t) return t;
-          }
-        } catch (e) {
-          console.warn("[DBG] loading textFrame failed:", e);
-        }
-      }
-    }
-
-    // 2) Try a true text selection (works if caret is inside a table cell or textbox)
-    try {
-      const selRange = ctx.presentation.getSelectedTextRange();
-      selRange.load("text");
-      await ctx.sync();
-      const txt = (selRange.text ?? "").trim();
-      console.log("[DBG] selectedTextRange:", JSON.stringify(txt));
-      if (txt) return txt;
-    } catch (e) {
-      console.warn("[DBG] getSelectedTextRange threw (likely table shape selected without caret):", e);
-    }
-
-    // 3) Optional fallback
-    if (!task.shouldSelectText && task.name !== "AD_HOC") {
-      console.log("[DBG] Falling back to collectAllSlidesText");
+    // --- Case A: user clicked a table (shape level)
+    if (await isTableShapeSelected(ctx)) {
+      // Try text range anyway (works only if the caret is *inside* a cell AND text is highlighted)
       try {
-        return await collectAllSlidesText(ctx);
-      } catch (e) {
-        console.warn("[DBG] collectAllSlidesText failed:", e);
-      }
+        const r = ctx.presentation.getSelectedTextRange();
+        r.load("text");
+        await ctx.sync();
+        const t = (r.text ?? "").trim();
+        if (t) return t;
+      } catch { /* ignore */ }
+
+      toast("Tip: click *inside* a table cell so the text cursor blinks, select the text you want (e.g., Shift+End), then run again.");
+      // Don’t attempt to read table cells via API — unsupported on many builds.
     }
 
-    console.log("[DBG] No usable selection.");
+    // --- Case B: normal text selection (textbox, placeholder, or cell text actually selected)
+    try {
+      const r = ctx.presentation.getSelectedTextRange();
+      r.load("text");
+      await ctx.sync();
+      const t = (r.text ?? "").trim();
+      if (t) return t;
+    } catch { /* ignore */ }
+
+    // --- Case C: no selection → optional fallback to all non-table text
+    if (!task.shouldSelectText && task.name !== "AD_HOC") {
+      try {
+        return await collectAllSlidesText(ctx); // defined below
+      } catch { /* ignore */ }
+    }
+
+    toast("No text selected. Highlight text in a textbox or inside a table cell and try again.");
     return "";
   });
 }
+
+
+async function collectAllSlidesText(ctx: PowerPoint.RequestContext): Promise<string> {
+  const out: string[] = [];
+  const slides = ctx.presentation.slides;
+  slides.load("items");
+  await ctx.sync();
+
+  for (const [i, slide] of slides.items.entries()) {
+    const shapes = slide.shapes;
+    shapes.load("items");
+    await ctx.sync();
+
+    shapes.items.forEach(s => s.load("id,name,type"));
+    await ctx.sync();
+
+    async function walk(s: any) {
+      if (s.type === "Group") {
+        s.groupItems.load("items");
+        await ctx.sync();
+        s.groupItems.items.forEach((c: any) => c.load("id,name,type"));
+        await ctx.sync();
+        for (const c of s.groupItems.items as any[]) await walk(c);
+        return;
+      }
+      if (s.type === "Table") return; // skip – API can’t read cells reliably
+
+      try {
+        s.load("textFrame/hasText,textFrame/textRange/text");
+        await ctx.sync();
+        if (s.textFrame?.hasText && s.textFrame?.textRange?.text) {
+          const t = (s.textFrame.textRange.text || "").trim();
+          if (t) out.push(t);
+        }
+      } catch { /* ignore */ }
+    }
+
+    for (const s of shapes.items as any[]) await walk(s);
+  }
+  return out.filter(Boolean).join("\n");
+}
+
+
+async function isTableShapeSelected(ctx: PowerPoint.RequestContext): Promise<boolean> {
+  const shapes = ctx.presentation.getSelectedShapes();
+  shapes.load("items");
+  await ctx.sync();
+
+  if (!shapes.items.length) return false;
+  shapes.items.forEach(s => s.load("type"));
+  await ctx.sync();
+
+  // If any selected shape is a table, return true
+  return shapes.items.some((s: any) => s.type === "Table");
+}
+
+
+
+
+
