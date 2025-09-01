@@ -2,63 +2,88 @@ async function getPptSelectedOrFullText(task: any): Promise<string> {
   return await PowerPoint.run(async (ctx) => {
     let result = "";
 
-    // 1) Try a real text selection first
+    // 1) Try text range selection first
     const selRange = ctx.presentation.getSelectedTextRange();
     selRange.load("text");
     await ctx.sync();
+    console.log("[DBG] selectedTextRange:", JSON.stringify((selRange.text ?? "").trim()));
 
     const selTxt = (selRange.text ?? "").trim();
-    if (selTxt) return selTxt;
+    if (selTxt) {
+      console.log("[DBG] Using selected text");
+      return selTxt;
+    }
 
-    // 2) No text range → look at selected shapes (text boxes, tables, etc.)
+    // 2) Shapes (could be textbox, table, group, etc.)
     const selShapes = ctx.presentation.getSelectedShapes();
     selShapes.load("items");
     await ctx.sync();
+    console.log("[DBG] selectedShapes.count:", selShapes.items.length);
 
-    if (selShapes.items.length) {
-      // Load relevant props for both text frames and tables
+    if (selShapes.items.length > 0) {
+      // Load props we care about
       selShapes.items.forEach(s => {
-        s.load("textFrame/hasText,textFrame/textRange/text,table/rows/items");
+        s.load("id,name,type,textFrame/hasText,textFrame/textRange/text,table/rows/count,table/columns/count");
       });
       await ctx.sync();
 
-      const pieces: string[] = [];
+      const parts: string[] = [];
 
       for (const s of selShapes.items as any[]) {
-        // (a) plain text shapes
+        console.log("[DBG] Shape:", {
+          id: s.id,
+          name: s.name,
+          type: s.type,
+          hasText: s.textFrame?.hasText,
+          tableRows: s.table?.rows?.count,
+          tableCols: s.table?.columns?.count,
+        });
+
+        // (a) Plain text box
         if (s.textFrame?.hasText && s.textFrame?.textRange?.text) {
-          pieces.push(s.textFrame.textRange.text.trim());
+          parts.push(s.textFrame.textRange.text.trim());
+          continue;
         }
 
-        // (b) tables → iterate rows/cells and read each cell's text
-        if (s.table) {
-          // ensure we have the rows & cells loaded
-          s.table.rows.items.forEach((row: any) => row.load("cells/items"));
-          await ctx.sync();
+        // (b) Table
+        if (s.type === "Table" || s.table) {
+          const rows = s.table.rows.count;
+          const cols = s.table.columns.count;
+          console.log(`[DBG] Table detected: ${rows} rows x ${cols} cols`);
 
-          for (const row of s.table.rows.items as any[]) {
-            row.cells.items.forEach((cell: any) => {
+          // Load each cell text
+          for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+              const cell = s.table.getCell(r, c);
               cell.load("textFrame/hasText,textFrame/textRange/text");
-            });
+            }
           }
           await ctx.sync();
 
-          for (const row of s.table.rows.items as any[]) {
-            for (const cell of row.cells.items as any[]) {
-              const t = cell.textFrame?.hasText ? cell.textFrame?.textRange?.text : "";
-              if (t) pieces.push(t.trim());
+          for (let r = 0; r < rows; r++) {
+            const rowTexts: string[] = [];
+            for (let c = 0; c < cols; c++) {
+              const cell = s.table.getCell(r, c) as any;
+              const t = cell.textFrame?.hasText ? (cell.textFrame.textRange.text ?? "") : "";
+              rowTexts.push(t.trim());
             }
+            parts.push(rowTexts.join("\t")); // join cells with tab
           }
         }
       }
 
-      if (pieces.length) return pieces.join("\n");
+      if (parts.length > 0) {
+        console.log("[DBG] Extracted text from shapes:", parts);
+        return parts.join("\n");
+      }
     }
 
-    // 3) Fallback (your existing helper)
+    // 3) Fallback → whole presentation
     if (!task.shouldSelectText && task.name !== "AD_HOC") {
+      console.log("[DBG] Falling back to collectAllSlidesText");
       result = await collectAllSlidesText(ctx);
     }
+
     return result;
   });
 }
