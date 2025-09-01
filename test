@@ -1,49 +1,56 @@
 async function getPptSelectedOrFullText(task: any): Promise<string> {
   return await PowerPoint.run(async (ctx) => {
-    // ---------- Helpers ----------
-    async function logShapesInfo(shapes: PowerPoint.ShapeCollection) {
+    // -------- utilities --------
+    async function logShapes(shapes: PowerPoint.ShapeCollection) {
       shapes.load("items");
       await ctx.sync();
+
       console.log("[DBG] selectedShapes.count:", shapes.items.length);
-      shapes.items.forEach(s =>
-        s.load("id,name,type,textFrame/hasText,table/rows/count,table/columns/count,groupItems/items"));
+      shapes.items.forEach(s => s.load("id,name,type,textFrame/hasText,groupItems/items"));
       await ctx.sync();
+
       shapes.items.forEach((s: any, i: number) => {
         console.log(`[DBG] shape[${i}]`, {
           id: s.id,
           name: s.name,
           type: s.type,
           hasText: s.textFrame?.hasText,
-          tableRows: s.table?.rows?.count,
-          tableCols: s.table?.columns?.count,
           isGroup: !!s.groupItems
         });
       });
     }
 
     async function extractFromShapes(shapes: PowerPoint.ShapeCollection): Promise<string> {
-      const parts: string[] = [];
+      const out: string[] = [];
 
-      // Ensure props are loaded
+      // always make sure we have items
       shapes.load("items");
       await ctx.sync();
-      shapes.items.forEach(s =>
-        s.load("type,textFrame/hasText,textFrame/textRange/text,table/rows/count,table/columns/count,groupItems/items"));
+
+      // pre-load basic props used for branching
+      shapes.items.forEach(s => s.load("type,textFrame/hasText,textFrame/textRange/text,groupItems/items"));
       await ctx.sync();
 
       async function walkShape(s: any) {
         // A) Text box
         if (s.textFrame?.hasText && s.textFrame?.textRange?.text) {
-          parts.push(s.textFrame.textRange.text.trim());
+          const t = (s.textFrame.textRange.text || "").trim();
+          if (t) out.push(t);
         }
 
-        // B) Table (cell-by-cell)
+        // B) Table (use getCount() — NOT load(".../count"))
         if (s.type === "Table" || s.table) {
-          const rows = s.table.rows.count;
-          const cols = s.table.columns.count;
-          console.log(`[DBG] Table detected: ${rows}x${cols}`);
+          let rows = 0, cols = 0;
+          try {
+            rows = s.table.rows.getCount();
+            cols = s.table.columns.getCount();
+            await ctx.sync();
+            console.log(`[DBG] Table detected: ${rows} rows x ${cols} cols`);
+          } catch (e) {
+            console.warn("[DBG] Could not get table counts:", e);
+          }
 
-          // Load each cell text
+          // load all cells' text
           for (let r = 0; r < rows; r++) {
             for (let c = 0; c < cols; c++) {
               const cell = s.table.getCell(r, c);
@@ -56,10 +63,10 @@ async function getPptSelectedOrFullText(task: any): Promise<string> {
             const rowTexts: string[] = [];
             for (let c = 0; c < cols; c++) {
               const cell: any = s.table.getCell(r, c);
-              const t = cell.textFrame?.hasText ? (cell.textFrame.textRange.text ?? "") : "";
-              rowTexts.push(t.trim());
+              const txt = cell.textFrame?.hasText ? (cell.textFrame.textRange.text || "") : "";
+              rowTexts.push(txt.trim());
             }
-            parts.push(rowTexts.join("\t"));
+            out.push(rowTexts.join("\t"));
           }
         }
 
@@ -68,7 +75,7 @@ async function getPptSelectedOrFullText(task: any): Promise<string> {
           s.groupItems.load("items");
           await ctx.sync();
           for (const child of s.groupItems.items as any[]) {
-            child.load("type,textFrame/hasText,textFrame/textRange/text,table/rows/count,table/columns/count,groupItems/items");
+            child.load("type,textFrame/hasText,textFrame/textRange/text,groupItems/items");
           }
           await ctx.sync();
           for (const child of s.groupItems.items as any[]) {
@@ -78,27 +85,30 @@ async function getPptSelectedOrFullText(task: any): Promise<string> {
       }
 
       for (const s of shapes.items as any[]) {
-        await walkShape(s);
+        try {
+          await walkShape(s);
+        } catch (e) {
+          console.warn("[DBG] walkShape failed for shape:", s?.name || s?.id, e);
+        }
       }
 
-      return parts.filter(Boolean).join("\n");
+      return out.filter(Boolean).join("\n");
     }
 
-    // ---------- 1) SHAPES FIRST (avoids table-induced exception) ----------
+    // -------- 1) SHAPES FIRST (prevents table exception) --------
     const selShapes = ctx.presentation.getSelectedShapes();
     try {
-      await logShapesInfo(selShapes);
+      await logShapes(selShapes);
       const fromShapes = await extractFromShapes(selShapes);
       if (fromShapes) {
-        console.log("[DBG] Using text from shapes.");
+        console.log("[DBG] Using text extracted from shapes.");
         return fromShapes;
       }
     } catch (e) {
       console.warn("[DBG] Shape inspection/extraction failed:", e);
-      // continue to text range attempt
     }
 
-    // ---------- 2) TEXT RANGE (only if shapes gave nothing) ----------
+    // -------- 2) TEXT RANGE (only if shapes yielded nothing) --------
     try {
       const selRange = ctx.presentation.getSelectedTextRange();
       selRange.load("text");
@@ -113,10 +123,14 @@ async function getPptSelectedOrFullText(task: any): Promise<string> {
       console.warn("[DBG] getSelectedTextRange threw (likely table selected):", e);
     }
 
-    // ---------- 3) FALLBACK ----------
+    // -------- 3) FALLBACK --------
     if (!task.shouldSelectText && task.name !== "AD_HOC") {
       console.log("[DBG] Falling back to collectAllSlidesText");
-      return await collectAllSlidesText(ctx);
+      try {
+        return await collectAllSlidesText(ctx);
+      } catch (e) {
+        console.warn("[DBG] collectAllSlidesText failed:", e);
+      }
     }
 
     console.log("[DBG] No usable selection.");
