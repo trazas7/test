@@ -1,1 +1,97 @@
-m
+async function collectAllNonTableText(ctx: PowerPoint.RequestContext): Promise<string> {
+  const out: string[] = [];
+
+  const slides = ctx.presentation.slides;
+  slides.load("items");
+  await ctx.sync();
+
+  for (const slide of slides.items) {
+    const shapes = slide.shapes;
+    shapes.load("items");
+    await ctx.sync();
+
+    // Phase 1: load only SAFE basics for every shape
+    shapes.items.forEach(s => s.load("id,name,type,textFrame")); // textFrame (shallow) is safe to load
+    await ctx.sync();
+
+    // Walk shapes with phased loads
+    async function walkShape(s: any, path: string) {
+      // 1) Groups -> recurse (load groupItems ONLY for groups)
+      if (s.type === "Group") {
+        try {
+          s.groupItems.load("items");
+          await ctx.sync();
+
+          // Load phase 1 for children
+          s.groupItems.items.forEach((ch: any) => ch.load("id,name,type,textFrame"));
+          await ctx.sync();
+
+          let i = 0;
+          for (const ch of s.groupItems.items as any[]) {
+            await walkShape(ch, `${path}.child[${i++}]`);
+          }
+        } catch (e) {
+          console.warn("[DBG] walkShape(group) failed at", path, e);
+        }
+        return;
+      }
+
+      // 2) Tables -> skip (PPT JS doesn’t expose cell text)
+      if (s.type === "Table") {
+        return;
+      }
+
+      // 3) Non-table shapes: only dig into textFrame if it exists
+      try {
+        if (s.textFrame) {
+          // Phase 2: now load inner textFrame props
+          s.load("textFrame/hasText,textFrame/textRange/text");
+          await ctx.sync();
+
+          if (s.textFrame.hasText && s.textFrame.textRange && typeof s.textFrame.textRange.text === "string") {
+            const t = s.textFrame.textRange.text.trim();
+            if (t) out.push(t);
+          }
+        }
+      } catch (e) {
+        console.warn("[DBG] walkShape(textFrame) failed at", path, e);
+      }
+    }
+
+    // Start walking all shapes on this slide
+    let idx = 0;
+    for (const s of shapes.items as any[]) {
+      await walkShape(s, `slide.shape[${idx++}]`);
+    }
+  }
+
+  return out.filter(Boolean).join("\n");
+}
+
+
+
+async function getPptSelectedOrFullText(task: any): Promise<string> {
+  return await PowerPoint.run(async (ctx) => {
+    // 1) Try selected text (use the null-object API to avoid exceptions)
+    try {
+      const sel = ctx.presentation.getSelectedTextRangeOrNullObject();
+      await ctx.sync();
+      if (!sel.isNullObject) {
+        sel.load("text");
+        await ctx.sync();
+        const t = (sel.text ?? "").trim();
+        if (t) return t; // works when characters are actually highlighted
+      }
+    } catch (e) {
+      console.warn("[DBG] selectedTextRange failed:", e);
+    }
+
+    // 2) Fallback: collect all non-table text across slides (safe)
+    try {
+      return await collectAllNonTableText(ctx);
+    } catch (e) {
+      console.warn("[DBG] collectAllNonTableText failed:", e);
+      return "";
+    }
+  });
+}
