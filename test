@@ -2,50 +2,63 @@ async function getPptSelectedOrFullText(task: any): Promise<string> {
   return await PowerPoint.run(async (ctx) => {
     let result = "";
 
-    // 1) Try selected text first
+    // 1) Try a real text selection first
     const selRange = ctx.presentation.getSelectedTextRange();
     selRange.load("text");
     await ctx.sync();
 
     const selTxt = (selRange.text ?? "").trim();
-    if (selTxt) {
-      result = selTxt;
-      return result;
-    }
+    if (selTxt) return selTxt;
 
-    // 2) If no text range, check if one or more shapes are selected
+    // 2) No text range → look at selected shapes (text boxes, tables, etc.)
     const selShapes = ctx.presentation.getSelectedShapes();
     selShapes.load("items");
     await ctx.sync();
 
-    if (selShapes.items.length > 0) {
-      // Load text for each selected shape (if it has a text frame)
+    if (selShapes.items.length) {
+      // Load relevant props for both text frames and tables
       selShapes.items.forEach(s => {
-        // Load both the existence of text and the text itself
-        s.load("textFrame/hasText, textFrame/textRange/text");
+        s.load("textFrame/hasText,textFrame/textRange/text,table/rows/items");
       });
       await ctx.sync();
 
       const pieces: string[] = [];
-      selShapes.items.forEach(s => {
-        // Guard against shapes without text
-        const hasText = (s as any).textFrame?.hasText;
-        const text = (s as any).textFrame?.textRange?.text;
-        if (hasText && text) pieces.push(text.trim());
-      });
 
-      if (pieces.length > 0) {
-        result = pieces.join("\n");
-        return result;
+      for (const s of selShapes.items as any[]) {
+        // (a) plain text shapes
+        if (s.textFrame?.hasText && s.textFrame?.textRange?.text) {
+          pieces.push(s.textFrame.textRange.text.trim());
+        }
+
+        // (b) tables → iterate rows/cells and read each cell's text
+        if (s.table) {
+          // ensure we have the rows & cells loaded
+          s.table.rows.items.forEach((row: any) => row.load("cells/items"));
+          await ctx.sync();
+
+          for (const row of s.table.rows.items as any[]) {
+            row.cells.items.forEach((cell: any) => {
+              cell.load("textFrame/hasText,textFrame/textRange/text");
+            });
+          }
+          await ctx.sync();
+
+          for (const row of s.table.rows.items as any[]) {
+            for (const cell of row.cells.items as any[]) {
+              const t = cell.textFrame?.hasText ? cell.textFrame?.textRange?.text : "";
+              if (t) pieces.push(t.trim());
+            }
+          }
+        }
       }
+
+      if (pieces.length) return pieces.join("\n");
     }
 
-    // 3) Optional fallback: gather text from the whole deck / slide
+    // 3) Fallback (your existing helper)
     if (!task.shouldSelectText && task.name !== "AD_HOC") {
-      result = await collectAllSlidesText(ctx); // your existing helper
-      return result;
+      result = await collectAllSlidesText(ctx);
     }
-
-    return result; // may be empty if nothing usable was selected
+    return result;
   });
 }
