@@ -1,6 +1,11 @@
+// Replace with your own UI toast if you have one.
+function notify(msg: string) {
+  console.log("[INFO]", msg);
+}
+
 async function getPptSelectedOrFullText(task: any): Promise<string> {
   return await PowerPoint.run(async (ctx) => {
-    // 1) Try shapes first — don’t touch table internals
+    // 1) Shapes first — detect tables and bail with a hint
     const selShapes = ctx.presentation.getSelectedShapes();
     selShapes.load("items");
     await ctx.sync();
@@ -13,28 +18,25 @@ async function getPptSelectedOrFullText(task: any): Promise<string> {
       console.log("[DBG] visiting shape", { id: s.id, name: s.name, type: s.type });
 
       if (s.type === "Table") {
-        console.log("[DBG] Table selected — API cannot read cells unless caret is inside a cell.");
-        showInfo("Click inside a table cell (text cursor visible) and run again.");
-        // Skip; don't try s.table.rows/columns — it will be undefined on many builds.
-        continue;
-      }
-
-      // Text boxes/placeholders
-      try {
-        s.load("textFrame/hasText,textFrame/textRange/text");
-        await ctx.sync();
-        if (s.textFrame?.hasText && s.textFrame?.textRange?.text) {
-          const t = (s.textFrame.textRange.text || "").trim();
-          if (t) return t;
+        // Don’t touch s.table.* — it's undefined on many builds.
+        notify("Click **inside** a table cell so the text cursor is blinking, then select the text (or press Ctrl+A to select that cell) and run again.");
+        // keep going; maybe user also has a text selection
+      } else {
+        // Text boxes/placeholders
+        try {
+          s.load("textFrame/hasText,textFrame/textRange/text");
+          await ctx.sync();
+          if (s.textFrame?.hasText && s.textFrame?.textRange?.text) {
+            const t = (s.textFrame.textRange.text || "").trim();
+            if (t) return t;
+          }
+        } catch (e) {
+          console.warn("[DBG] loading textFrame failed:", e);
         }
-      } catch (e) {
-        console.warn("[DBG] loading textFrame failed:", e);
       }
-
-      // Groups? (Optional: recurse into groupItems safely by first loading id/name/type of children)
     }
 
-    // 2) If nothing from shapes, try a pure text selection (works when caret is inside table cell)
+    // 2) Try a true text selection (works if caret is inside a table cell or textbox)
     try {
       const selRange = ctx.presentation.getSelectedTextRange();
       selRange.load("text");
@@ -43,14 +45,17 @@ async function getPptSelectedOrFullText(task: any): Promise<string> {
       console.log("[DBG] selectedTextRange:", JSON.stringify(txt));
       if (txt) return txt;
     } catch (e) {
-      console.warn("[DBG] getSelectedTextRange threw (table selected but no caret):", e);
+      console.warn("[DBG] getSelectedTextRange threw (likely table shape selected without caret):", e);
     }
 
-    // 3) Fallback (your existing method)
+    // 3) Optional fallback
     if (!task.shouldSelectText && task.name !== "AD_HOC") {
       console.log("[DBG] Falling back to collectAllSlidesText");
-      try { return await collectAllSlidesText(ctx); }
-      catch (e) { console.warn("[DBG] collectAllSlidesText failed:", e); }
+      try {
+        return await collectAllSlidesText(ctx);
+      } catch (e) {
+        console.warn("[DBG] collectAllSlidesText failed:", e);
+      }
     }
 
     console.log("[DBG] No usable selection.");
