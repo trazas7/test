@@ -1,139 +1,56 @@
 async function getPptSelectedOrFullText(task: any): Promise<string> {
   return await PowerPoint.run(async (ctx) => {
+    // 1) Try shapes first — don’t touch table internals
+    const selShapes = ctx.presentation.getSelectedShapes();
+    selShapes.load("items");
+    await ctx.sync();
+    console.log("[DBG] selectedShapes.count:", selShapes.items.length);
 
-    // ---------- helpers ----------
-    async function extractFromShapes(shapes: PowerPoint.ShapeCollection): Promise<string> {
-      const out: string[] = [];
+    selShapes.items.forEach(s => s.load("id,name,type"));
+    await ctx.sync();
 
-      // Phase 1: get the list and basic info (SAFE for all shapes)
-      shapes.load("items");
-      await ctx.sync();
-      console.log("[DBG] selectedShapes.count:", shapes.items.length);
+    for (const s of selShapes.items as any[]) {
+      console.log("[DBG] visiting shape", { id: s.id, name: s.name, type: s.type });
 
-      shapes.items.forEach(s => s.load("id,name,type"));
-      await ctx.sync();
-
-      async function handleShape(s: any, path: string) {
-        console.log(`[DBG] visiting ${path}`, { id: s.id, name: s.name, type: s.type });
-
-        // Branch by type BEFORE loading type-specific props
-        if (s.type === "Group") {
-          // load children only for groups
-          s.groupItems.load("items");
-          await ctx.sync();
-          console.log(`[DBG] ${path} is Group with ${s.groupItems.items.length} children`);
-          // children need their id/name/type loaded first
-          s.groupItems.items.forEach((child: any) => child.load("id,name,type"));
-          await ctx.sync();
-          let idx = 0;
-          for (const child of s.groupItems.items as any[]) {
-            await handleShape(child, `${path}.child[${idx++}]`);
-          }
-          return;
-        }
-
-        if (s.type === "Table") {
-          // Work with the Table API. Do NOT "load" rows/count; use getCount().
-          let rows = 0, cols = 0;
-          try {
-            rows = s.table.rows.getCount();
-            cols = s.table.columns.getCount();
-            await ctx.sync();
-            console.log(`[DBG] ${path} Table size = ${rows}x${cols}`);
-          } catch (e) {
-            console.warn(`[DBG] ${path} failed to get table counts:`, e);
-            return;
-          }
-
-          // Load all cells' text
-          for (let r = 0; r < rows; r++) {
-            for (let c = 0; c < cols; c++) {
-              const cell = s.table.getCell(r, c);
-              cell.load("textFrame/hasText,textFrame/textRange/text");
-            }
-          }
-          await ctx.sync();
-
-          for (let r = 0; r < rows; r++) {
-            const rowTexts: string[] = [];
-            for (let c = 0; c < cols; c++) {
-              const cell: any = s.table.getCell(r, c);
-              const t = cell.textFrame?.hasText ? (cell.textFrame.textRange.text || "") : "";
-              rowTexts.push(t.trim());
-            }
-            out.push(rowTexts.join("\t"));
-          }
-          return;
-        }
-
-        // Most text boxes and placeholders are treated as shapes with textFrame
-        // Only load textFrame for non-group, non-table shapes
-        try {
-          s.load("textFrame/hasText,textFrame/textRange/text");
-          await ctx.sync();
-          if (s.textFrame?.hasText && s.textFrame?.textRange?.text) {
-            const t = (s.textFrame.textRange.text || "").trim();
-            if (t) {
-              console.log(`[DBG] ${path} text length:`, t.length);
-              out.push(t);
-            } else {
-              console.log(`[DBG] ${path} has empty text`);
-            }
-          } else {
-            console.log(`[DBG] ${path} has no textFrame text`);
-          }
-        } catch (e) {
-          console.warn(`[DBG] ${path} loading textFrame failed:`, e);
-        }
+      if (s.type === "Table") {
+        console.log("[DBG] Table selected — API cannot read cells unless caret is inside a cell.");
+        showInfo("Click inside a table cell (text cursor visible) and run again.");
+        // Skip; don't try s.table.rows/columns — it will be undefined on many builds.
+        continue;
       }
 
-      let i = 0;
-      for (const s of shapes.items as any[]) {
-        try {
-          await handleShape(s, `shape[${i++}]`);
-        } catch (e) {
-          console.warn("[DBG] handleShape error:", e);
+      // Text boxes/placeholders
+      try {
+        s.load("textFrame/hasText,textFrame/textRange/text");
+        await ctx.sync();
+        if (s.textFrame?.hasText && s.textFrame?.textRange?.text) {
+          const t = (s.textFrame.textRange.text || "").trim();
+          if (t) return t;
         }
+      } catch (e) {
+        console.warn("[DBG] loading textFrame failed:", e);
       }
 
-      return out.filter(Boolean).join("\n");
+      // Groups? (Optional: recurse into groupItems safely by first loading id/name/type of children)
     }
 
-    // ---------- 1) SHAPES FIRST (avoids table crash on textRange) ----------
-    try {
-      const selShapes = ctx.presentation.getSelectedShapes();
-      const fromShapes = await extractFromShapes(selShapes);
-      if (fromShapes) {
-        console.log("[DBG] Using text extracted from shapes.");
-        return fromShapes;
-      }
-    } catch (e) {
-      console.warn("[DBG] Shape extraction top-level failed:", e);
-    }
-
-    // ---------- 2) TEXT RANGE (only if shapes yielded nothing) ----------
+    // 2) If nothing from shapes, try a pure text selection (works when caret is inside table cell)
     try {
       const selRange = ctx.presentation.getSelectedTextRange();
       selRange.load("text");
       await ctx.sync();
       const txt = (selRange.text ?? "").trim();
       console.log("[DBG] selectedTextRange:", JSON.stringify(txt));
-      if (txt) {
-        console.log("[DBG] Using selected text");
-        return txt;
-      }
+      if (txt) return txt;
     } catch (e) {
-      console.warn("[DBG] getSelectedTextRange threw (likely table selected):", e);
+      console.warn("[DBG] getSelectedTextRange threw (table selected but no caret):", e);
     }
 
-    // ---------- 3) FALLBACK ----------
+    // 3) Fallback (your existing method)
     if (!task.shouldSelectText && task.name !== "AD_HOC") {
-      try {
-        console.log("[DBG] Falling back to collectAllSlidesText");
-        return await collectAllSlidesText(ctx);
-      } catch (e) {
-        console.warn("[DBG] collectAllSlidesText failed:", e);
-      }
+      console.log("[DBG] Falling back to collectAllSlidesText");
+      try { return await collectAllSlidesText(ctx); }
+      catch (e) { console.warn("[DBG] collectAllSlidesText failed:", e); }
     }
 
     console.log("[DBG] No usable selection.");
