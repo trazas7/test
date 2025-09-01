@@ -1,56 +1,51 @@
 async function getPptSelectedOrFullText(task: any): Promise<string> {
   return await PowerPoint.run(async (ctx) => {
-    // -------- utilities --------
-    async function logShapes(shapes: PowerPoint.ShapeCollection) {
-      shapes.load("items");
-      await ctx.sync();
 
-      console.log("[DBG] selectedShapes.count:", shapes.items.length);
-      shapes.items.forEach(s => s.load("id,name,type,textFrame/hasText,groupItems/items"));
-      await ctx.sync();
-
-      shapes.items.forEach((s: any, i: number) => {
-        console.log(`[DBG] shape[${i}]`, {
-          id: s.id,
-          name: s.name,
-          type: s.type,
-          hasText: s.textFrame?.hasText,
-          isGroup: !!s.groupItems
-        });
-      });
-    }
-
+    // ---------- helpers ----------
     async function extractFromShapes(shapes: PowerPoint.ShapeCollection): Promise<string> {
       const out: string[] = [];
 
-      // always make sure we have items
+      // Phase 1: get the list and basic info (SAFE for all shapes)
       shapes.load("items");
       await ctx.sync();
+      console.log("[DBG] selectedShapes.count:", shapes.items.length);
 
-      // pre-load basic props used for branching
-      shapes.items.forEach(s => s.load("type,textFrame/hasText,textFrame/textRange/text,groupItems/items"));
+      shapes.items.forEach(s => s.load("id,name,type"));
       await ctx.sync();
 
-      async function walkShape(s: any) {
-        // A) Text box
-        if (s.textFrame?.hasText && s.textFrame?.textRange?.text) {
-          const t = (s.textFrame.textRange.text || "").trim();
-          if (t) out.push(t);
+      async function handleShape(s: any, path: string) {
+        console.log(`[DBG] visiting ${path}`, { id: s.id, name: s.name, type: s.type });
+
+        // Branch by type BEFORE loading type-specific props
+        if (s.type === "Group") {
+          // load children only for groups
+          s.groupItems.load("items");
+          await ctx.sync();
+          console.log(`[DBG] ${path} is Group with ${s.groupItems.items.length} children`);
+          // children need their id/name/type loaded first
+          s.groupItems.items.forEach((child: any) => child.load("id,name,type"));
+          await ctx.sync();
+          let idx = 0;
+          for (const child of s.groupItems.items as any[]) {
+            await handleShape(child, `${path}.child[${idx++}]`);
+          }
+          return;
         }
 
-        // B) Table (use getCount() — NOT load(".../count"))
-        if (s.type === "Table" || s.table) {
+        if (s.type === "Table") {
+          // Work with the Table API. Do NOT "load" rows/count; use getCount().
           let rows = 0, cols = 0;
           try {
             rows = s.table.rows.getCount();
             cols = s.table.columns.getCount();
             await ctx.sync();
-            console.log(`[DBG] Table detected: ${rows} rows x ${cols} cols`);
+            console.log(`[DBG] ${path} Table size = ${rows}x${cols}`);
           } catch (e) {
-            console.warn("[DBG] Could not get table counts:", e);
+            console.warn(`[DBG] ${path} failed to get table counts:`, e);
+            return;
           }
 
-          // load all cells' text
+          // Load all cells' text
           for (let r = 0; r < rows; r++) {
             for (let c = 0; c < cols; c++) {
               const cell = s.table.getCell(r, c);
@@ -63,70 +58,78 @@ async function getPptSelectedOrFullText(task: any): Promise<string> {
             const rowTexts: string[] = [];
             for (let c = 0; c < cols; c++) {
               const cell: any = s.table.getCell(r, c);
-              const txt = cell.textFrame?.hasText ? (cell.textFrame.textRange.text || "") : "";
-              rowTexts.push(txt.trim());
+              const t = cell.textFrame?.hasText ? (cell.textFrame.textRange.text || "") : "";
+              rowTexts.push(t.trim());
             }
             out.push(rowTexts.join("\t"));
           }
+          return;
         }
 
-        // C) Group → recurse
-        if (s.groupItems) {
-          s.groupItems.load("items");
+        // Most text boxes and placeholders are treated as shapes with textFrame
+        // Only load textFrame for non-group, non-table shapes
+        try {
+          s.load("textFrame/hasText,textFrame/textRange/text");
           await ctx.sync();
-          for (const child of s.groupItems.items as any[]) {
-            child.load("type,textFrame/hasText,textFrame/textRange/text,groupItems/items");
+          if (s.textFrame?.hasText && s.textFrame?.textRange?.text) {
+            const t = (s.textFrame.textRange.text || "").trim();
+            if (t) {
+              console.log(`[DBG] ${path} text length:`, t.length);
+              out.push(t);
+            } else {
+              console.log(`[DBG] ${path} has empty text`);
+            }
+          } else {
+            console.log(`[DBG] ${path} has no textFrame text`);
           }
-          await ctx.sync();
-          for (const child of s.groupItems.items as any[]) {
-            await walkShape(child);
-          }
+        } catch (e) {
+          console.warn(`[DBG] ${path} loading textFrame failed:`, e);
         }
       }
 
+      let i = 0;
       for (const s of shapes.items as any[]) {
         try {
-          await walkShape(s);
+          await handleShape(s, `shape[${i++}]`);
         } catch (e) {
-          console.warn("[DBG] walkShape failed for shape:", s?.name || s?.id, e);
+          console.warn("[DBG] handleShape error:", e);
         }
       }
 
       return out.filter(Boolean).join("\n");
     }
 
-    // -------- 1) SHAPES FIRST (prevents table exception) --------
-    const selShapes = ctx.presentation.getSelectedShapes();
+    // ---------- 1) SHAPES FIRST (avoids table crash on textRange) ----------
     try {
-      await logShapes(selShapes);
+      const selShapes = ctx.presentation.getSelectedShapes();
       const fromShapes = await extractFromShapes(selShapes);
       if (fromShapes) {
         console.log("[DBG] Using text extracted from shapes.");
         return fromShapes;
       }
     } catch (e) {
-      console.warn("[DBG] Shape inspection/extraction failed:", e);
+      console.warn("[DBG] Shape extraction top-level failed:", e);
     }
 
-    // -------- 2) TEXT RANGE (only if shapes yielded nothing) --------
+    // ---------- 2) TEXT RANGE (only if shapes yielded nothing) ----------
     try {
       const selRange = ctx.presentation.getSelectedTextRange();
       selRange.load("text");
       await ctx.sync();
-      const selTxt = (selRange.text ?? "").trim();
-      console.log("[DBG] selectedTextRange:", JSON.stringify(selTxt));
-      if (selTxt) {
+      const txt = (selRange.text ?? "").trim();
+      console.log("[DBG] selectedTextRange:", JSON.stringify(txt));
+      if (txt) {
         console.log("[DBG] Using selected text");
-        return selTxt;
+        return txt;
       }
     } catch (e) {
       console.warn("[DBG] getSelectedTextRange threw (likely table selected):", e);
     }
 
-    // -------- 3) FALLBACK --------
+    // ---------- 3) FALLBACK ----------
     if (!task.shouldSelectText && task.name !== "AD_HOC") {
-      console.log("[DBG] Falling back to collectAllSlidesText");
       try {
+        console.log("[DBG] Falling back to collectAllSlidesText");
         return await collectAllSlidesText(ctx);
       } catch (e) {
         console.warn("[DBG] collectAllSlidesText failed:", e);
