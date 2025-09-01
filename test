@@ -1,121 +1,33 @@
-// -----------------------------------------------------
-// Small helpers
-// -----------------------------------------------------
+async function getWordSelectedOrFullText(task: any): Promise<string> {
+  return await Word.run(async (ctx) => {
+    let result = "";
 
-const AD_HOC = "AD_HOC";
+    const selection = ctx.document.getSelection();
+    selection.load("text"); // load selection text to check if empty
+    await ctx.sync();
 
-function buildPromptText(task, selectedText) {
-  return selectedText ? `${task.prompt}:\n${selectedText}` : null;
-}
+    if (selection.text && selection.text.trim().length > 0) {
+      // ✅ There is a selection → get HTML
+      const html = selection.getHtml();
+      await ctx.sync();
 
-function requireSelectionIfNeeded(task, selectedText) {
-  if (!selectedText && task.shouldSelectText) {
-    showMessage("Please select text in the document first.", "error");
-    return true; // signal caller to stop
-  }
-  return false;
-}
-
-// ---- Word ----
-async function getWordText(context, task) {
-  let selectedText = "";
-
-  // try selection HTML first (keeps basic formatting if you later need it)
-  try {
-    const selection = context.document.getSelection();
-    const html = selection.getHtml();
-    await context.sync();
-    const cleanedHtml = minimizeHtml ? minimizeHtml(html.value) : html.value;
-    if (cleanedHtml) selectedText = cleanedHtml.trim();
-  } catch (_) { /* selection may not have HTML, ignore */ }
-
-  // fall back to whole doc when allowed
-  if (!selectedText && !task.shouldSelectText && task.name !== AD_HOC) {
-    const body = context.document.body;
-    body.load("text");
-    await context.sync();
-    selectedText = (body.text || "").trim();
-  }
-  return selectedText;
-}
-
-// ---- PowerPoint ----
-async function getPowerPointText(context, task) {
-  let selectedText = "";
-
-  // 1) try the user's selection
-  const selection = context.presentation.getSelectedTextRange();
-  selection.load("text");
-  await context.sync();
-  const selText = (selection.text || "").trim();
-  if (selText) return selText;
-
-  // 2) fall back to all slide text when allowed
-  if (!task.shouldSelectText && task.name !== AD_HOC) {
-    const slides = context.presentation.slides;
-    slides.load("items");
-    await context.sync();
-
-    let fullText = "";
-    for (const slide of slides.items) {
-      const shapes = slide.shapes;
-      shapes.load("items");
-      await context.sync();
-
-      // load text ranges
-      for (const shape of shapes.items) {
-        if (shape.textFrame) shape.textFrame.textRange.load("text");
+      const cleaned = minimizeHtml(html.value);
+      if (cleaned) {
+        result = cleaned;
       }
-      await context.sync();
+    } else if (!task.shouldSelectText && task.name !== "AD_HOC") {
+      // ✅ No selection → get HTML from body
+      const body = ctx.document.body;
+      const html = body.getHtml();
+      await ctx.sync();
 
-      // collect text
-      for (const shape of shapes.items) {
-        if (shape.textFrame) {
-          const t = (shape.textFrame.textRange.text || "").trim();
-          if (t) fullText += t + "\n";
-        }
+      const cleaned = minimizeHtml(html.value);
+      if (cleaned) {
+        result = cleaned;
       }
     }
-    selectedText = fullText.trim();
-  }
 
-  return selectedText;
-}
-
-// Host router
-async function getSelectedText(task) {
-  if (Office.context.host === Office.HostType.Word) {
-    return Word.run(ctx => getWordText(ctx, task));
-  }
-  if (Office.context.host === Office.HostType.PowerPoint) {
-    return PowerPoint.run(ctx => getPowerPointText(ctx, task));
-  }
-  return "";
-}
-
-// -----------------------------------------------------
-// Button wiring (clean!)
-// -----------------------------------------------------
-function setupButtons() {
-  for (const buttonId in TASK_CONFIG) {
-    getElementById(buttonId).addEventListener("click", async () => {
-      const task = TASK_CONFIG[buttonId];
-      currentTask = task.name;
-
-      try {
-        const selectedText = await getSelectedText(task);
-        if (requireSelectionIfNeeded(task, selectedText)) return;
-
-        const promptText = buildPromptText(task, selectedText);
-        showPromptScreen({
-          heading: task.heading,
-          prompt: promptText,
-          name: task.name,
-          skipPromptReview: task.skipPromptReview
-        });
-      } catch (err) {
-        showMessage("Error retrieving selected text from document.", "error");
-      }
-    });
-  }
+    console.log("result", result);
+    return result;
+  });
 }
