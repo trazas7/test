@@ -1,33 +1,51 @@
-async function getWordSelectedOrFullText(task: any): Promise<string> {
-  return await Word.run(async (ctx) => {
+async function getPptSelectedOrFullText(task: any): Promise<string> {
+  return await PowerPoint.run(async (ctx) => {
     let result = "";
 
-    const selection = ctx.document.getSelection();
-    selection.load("text"); // load selection text to check if empty
+    // 1) Try selected text first
+    const selRange = ctx.presentation.getSelectedTextRange();
+    selRange.load("text");
     await ctx.sync();
 
-    if (selection.text && selection.text.trim().length > 0) {
-      // ✅ There is a selection → get HTML
-      const html = selection.getHtml();
+    const selTxt = (selRange.text ?? "").trim();
+    if (selTxt) {
+      result = selTxt;
+      return result;
+    }
+
+    // 2) If no text range, check if one or more shapes are selected
+    const selShapes = ctx.presentation.getSelectedShapes();
+    selShapes.load("items");
+    await ctx.sync();
+
+    if (selShapes.items.length > 0) {
+      // Load text for each selected shape (if it has a text frame)
+      selShapes.items.forEach(s => {
+        // Load both the existence of text and the text itself
+        s.load("textFrame/hasText, textFrame/textRange/text");
+      });
       await ctx.sync();
 
-      const cleaned = minimizeHtml(html.value);
-      if (cleaned) {
-        result = cleaned;
-      }
-    } else if (!task.shouldSelectText && task.name !== "AD_HOC") {
-      // ✅ No selection → get HTML from body
-      const body = ctx.document.body;
-      const html = body.getHtml();
-      await ctx.sync();
+      const pieces: string[] = [];
+      selShapes.items.forEach(s => {
+        // Guard against shapes without text
+        const hasText = (s as any).textFrame?.hasText;
+        const text = (s as any).textFrame?.textRange?.text;
+        if (hasText && text) pieces.push(text.trim());
+      });
 
-      const cleaned = minimizeHtml(html.value);
-      if (cleaned) {
-        result = cleaned;
+      if (pieces.length > 0) {
+        result = pieces.join("\n");
+        return result;
       }
     }
 
-    console.log("result", result);
-    return result;
+    // 3) Optional fallback: gather text from the whole deck / slide
+    if (!task.shouldSelectText && task.name !== "AD_HOC") {
+      result = await collectAllSlidesText(ctx); // your existing helper
+      return result;
+    }
+
+    return result; // may be empty if nothing usable was selected
   });
 }
