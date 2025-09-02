@@ -1,121 +1,189 @@
 export async function getPptSelectedTextOrShape(): Promise<string> {
+  console.log("🚀 Starting getPptSelectedTextOrShape function");
+  
   return PowerPoint.run(async (ctx) => {
-    // 1) Try highlighted text first
-    const sel = ctx.presentation.getSelectedTextRangeOrNullObject();
-    await ctx.sync();
+    console.log("📝 PowerPoint.run context initialized");
     
-    if (!sel.isNullObject) {
-      sel.load("text");
+    try {
+      // 1) Try highlighted text first
+      console.log("🔍 Step 1: Checking for selected text range");
+      const sel = ctx.presentation.getSelectedTextRangeOrNullObject();
       await ctx.sync();
-      return (sel.text ?? "").trim();
-    }
-
-    // 2) Fallback: check if a shape (including table) is selected
-    const shapes = ctx.presentation.getSelectedShapes();
-    shapes.load("items");
-    await ctx.sync();
-
-    if (shapes.items.length) {
-      for (const shape of shapes.items) {
-        // Load shape properties to determine type
-        shape.load("type,table");
+      console.log("✅ Text range sync completed, checking if null object");
+      
+      if (!sel.isNullObject) {
+        console.log("📖 Text range found, loading text content");
+        sel.load("text");
         await ctx.sync();
-
-        // Handle table shapes
-        if (shape.type === "Table" && shape.table) {
-          return await extractTableText(shape.table, ctx);
+        console.log("📄 Selected text:", sel.text);
+        const textResult = (sel.text ?? "").trim();
+        if (textResult) {
+          console.log("✅ Returning selected text:", textResult);
+          return textResult;
         }
-        
-        // Handle text shapes (your existing logic)
-        if (shape.type === "GeometricShape" || shape.type === "TextBox") {
-          shape.load("textFrame/hasText,textFrame/textRange/text");
+      } else {
+        console.log("❌ No text range selected");
+      }
+
+      // 2) Fallback: check if shapes are selected
+      console.log("🔍 Step 2: Checking for selected shapes");
+      const shapes = ctx.presentation.getSelectedShapes();
+      shapes.load("items");
+      await ctx.sync();
+      console.log(`📊 Found ${shapes.items.length} selected shapes`);
+
+      if (shapes.items.length > 0) {
+        for (let i = 0; i < shapes.items.length; i++) {
+          const shape = shapes.items[i];
+          console.log(`🔍 Processing shape ${i + 1}/${shapes.items.length}`);
+          
+          // Load basic shape properties
+          console.log("🔧 Loading shape properties...");
+          shape.load("type,name,id");
           await ctx.sync();
           
-          if (shape.textFrame?.hasText && shape.textFrame?.textRange?.text) {
-            return shape.textFrame.textRange.text.trim();
+          console.log(`📋 Shape type: "${shape.type}"`);
+          console.log(`📋 Shape name: "${shape.name}"`);
+          console.log(`📋 Shape id: "${shape.id}"`);
+          
+          // Check what properties are available
+          console.log("🔍 Checking available shape properties...");
+          try {
+            // Try to load all possible properties to see what's available
+            shape.load("textFrame,table,hasTable");
+            await ctx.sync();
+            console.log("✅ Additional properties loaded successfully");
+            
+            // Log what we found
+            console.log(`📋 Has textFrame: ${!!shape.textFrame}`);
+            console.log(`📋 Has table property: ${!!shape.table}`);
+            console.log(`📋 Has hasTable property: ${!!(shape as any).hasTable}`);
+            
+          } catch (loadError) {
+            console.warn("⚠️ Error loading additional properties:", loadError);
+          }
+
+          // Try different approaches based on shape type
+          if (shape.type === "Table") {
+            console.log("🏗️ Detected table shape, attempting table extraction...");
+            try {
+              const tableText = await attemptTableExtraction(shape, ctx);
+              if (tableText) {
+                console.log("✅ Table extraction successful:", tableText);
+                return tableText;
+              }
+            } catch (tableError) {
+              console.error("❌ Table extraction failed:", tableError);
+            }
+          }
+          
+          // Try text frame approach (original logic)
+          if (shape.textFrame) {
+            console.log("📝 Shape has textFrame, checking for text...");
+            try {
+              shape.textFrame.load("hasText,textRange");
+              await ctx.sync();
+              console.log(`📋 TextFrame hasText: ${shape.textFrame.hasText}`);
+              
+              if (shape.textFrame.hasText && shape.textFrame.textRange) {
+                shape.textFrame.textRange.load("text");
+                await ctx.sync();
+                const text = shape.textFrame.textRange.text?.trim();
+                console.log("📄 TextFrame content:", text);
+                if (text) {
+                  console.log("✅ Returning textFrame content:", text);
+                  return text;
+                }
+              }
+            } catch (textError) {
+              console.error("❌ TextFrame extraction failed:", textError);
+            }
+          }
+          
+          // Try alternative text extraction methods
+          console.log("🔄 Trying alternative text extraction methods...");
+          try {
+            // Method 1: Direct text property
+            shape.load("text");
+            await ctx.sync();
+            if ((shape as any).text) {
+              console.log("✅ Found direct text property:", (shape as any).text);
+              return (shape as any).text.trim();
+            }
+          } catch (e) {
+            console.log("❌ No direct text property available");
           }
         }
+        
+        console.log("❌ No extractable text found in any selected shapes");
+      } else {
+        console.log("❌ No shapes selected");
       }
-    }
 
-    return "";
+      console.log("❌ No text found anywhere, returning empty string");
+      return "";
+      
+    } catch (error) {
+      console.error("💥 Fatal error in getPptSelectedTextOrShape:", error);
+      console.error("Error details:", {
+        name: error.name,
+        message: error.message,
+        stack: error.stack
+      });
+      throw error;
+    }
   });
 }
 
-async function extractTableText(table: PowerPoint.Table, ctx: PowerPoint.RequestContext): Promise<string> {
-  // Load table dimensions
-  table.load("rowCount,columnCount");
-  await ctx.sync();
-
-  let tableText = "";
+async function attemptTableExtraction(shape: PowerPoint.Shape, ctx: PowerPoint.RequestContext): Promise<string> {
+  console.log("🏗️ Starting table extraction attempts...");
   
-  // Iterate through all cells
-  for (let row = 0; row < table.rowCount; row++) {
-    let rowText = "";
-    
-    for (let col = 0; col < table.columnCount; col++) {
-      const cell = table.getCell(row, col);
-      cell.load("textFrame/textRange/text");
+  // Method 1: Try Office.js table API (likely to fail)
+  try {
+    console.log("🔄 Method 1: Office.js table API");
+    if (shape.table) {
+      shape.table.load("rowCount,columnCount");
       await ctx.sync();
-      
-      const cellText = cell.textFrame?.textRange?.text?.trim() || "";
-      rowText += cellText;
-      
-      // Add tab separator between columns (except last column)
-      if (col < table.columnCount - 1) {
-        rowText += "\t";
-      }
+      console.log(`📊 Table dimensions: ${shape.table.rowCount} x ${shape.table.columnCount}`);
+      // Continue with table extraction...
+      return "Table found but extraction not yet implemented";
     }
-    
-    tableText += rowText;
-    
-    // Add newline between rows (except last row)
-    if (row < table.rowCount - 1) {
-      tableText += "\n";
-    }
+  } catch (e) {
+    console.log("❌ Method 1 failed:", e.message);
   }
   
-  return tableText;
-}
-
-// Alternative version that extracts only selected cells if available
-async function extractSelectedTableCells(table: PowerPoint.Table, ctx: PowerPoint.RequestContext): Promise<string> {
+  // Method 2: Try to access table through textFrame
   try {
-    // Try to get selected table range (this might not be available in all Office versions)
-    const selectedRange = table.getSelectedRange();
-    selectedRange.load("rowCount,columnCount,rowIndex,columnIndex");
+    console.log("🔄 Method 2: Table via textFrame");
+    if (shape.textFrame) {
+      shape.textFrame.load("textRange");
+      await ctx.sync();
+      if (shape.textFrame.textRange) {
+        shape.textFrame.textRange.load("text");
+        await ctx.sync();
+        const text = shape.textFrame.textRange.text;
+        console.log("📄 Table textFrame content:", text);
+        return text?.trim() || "";
+      }
+    }
+  } catch (e) {
+    console.log("❌ Method 2 failed:", e.message);
+  }
+  
+  // Method 3: Try PowerPoint-specific approaches
+  try {
+    console.log("🔄 Method 3: PowerPoint-specific properties");
+    // Load any PowerPoint-specific properties
+    shape.load(); // Load all available properties
     await ctx.sync();
     
-    let selectedText = "";
+    // Log all available properties
+    console.log("📋 All shape properties:", Object.keys(shape));
     
-    for (let row = 0; row < selectedRange.rowCount; row++) {
-      let rowText = "";
-      
-      for (let col = 0; col < selectedRange.columnCount; col++) {
-        const actualRow = selectedRange.rowIndex + row;
-        const actualCol = selectedRange.columnIndex + col;
-        
-        const cell = table.getCell(actualRow, actualCol);
-        cell.load("textFrame/textRange/text");
-        await ctx.sync();
-        
-        const cellText = cell.textFrame?.textRange?.text?.trim() || "";
-        rowText += cellText;
-        
-        if (col < selectedRange.columnCount - 1) {
-          rowText += "\t";
-        }
-      }
-      
-      selectedText += rowText;
-      if (row < selectedRange.rowCount - 1) {
-        selectedText += "\n";
-      }
-    }
-    
-    return selectedText;
-  } catch (error) {
-    // Fallback to extracting entire table if selected range is not available
-    return await extractTableText(table, ctx);
+  } catch (e) {
+    console.log("❌ Method 3 failed:", e.message);
   }
+  
+  console.log("❌ All table extraction methods failed");
+  return "";
 }
