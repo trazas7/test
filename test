@@ -4,13 +4,14 @@ import JSZip from "jszip";
 /**
  * Selected text → selected text box → if a TABLE is selected,
  * parse ONLY that table on the active slide by matching the shape name.
- * Otherwise, (optionally) fall back to all slides.
  */
-export async function getPptSelectedTextOrShape(): Promise<string> {
+export async function getPptSelectedTextOrShape(
+  allowFallbackAllSlides = false // keep false to avoid “whole deck” parsing
+): Promise<string> {
   const t0 = performance.now();
   console.log("🚀 [getPptSelectedTextOrShape] start");
 
-  let activeSlideIndex: number | null = null; // 1-based when available
+  let activeSlideIndex: number | null = null; // 1-based on most hosts
   let selectedTableName: string | null = null;
 
   const immediateText = await PowerPoint.run(async (ctx) => {
@@ -24,6 +25,8 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
         const t = (sel.text ?? "").trim();
         console.log("🖱️ selected text:", JSON.stringify(t));
         if (t) return t;
+      } else {
+        console.log("ℹ️ no selected text range");
       }
 
       console.log("🔎 step 2: inspect selected shapes");
@@ -33,27 +36,38 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
       console.log("📦 selected shapes:", shapes.items.length);
 
       if (shapes.items.length > 0) {
-        shapes.items.forEach((s) =>
-          s.load("type,name,hasText,textFrame/textRange/text")
-        );
+        // Load only *valid* props for PowerPoint.Shape
+        shapes.items.forEach((s) => s.load("type,name"));
         await ctx.sync();
 
         for (const s of shapes.items as any[]) {
-          console.log(
-            `• shape name=${s.name} type=${s.type} hasText=${s.hasText}`
-          );
-          if (s.type === "TextBox" && s.textFrame?.textRange?.text?.trim()) {
-            const txt = s.textFrame.textRange.text.trim();
-            console.log("📝 returning textbox text");
-            return txt;
+          console.log(`• shape name=${s.name} type=${s.type}`);
+
+          // If a text box is selected, load its text lazily
+          if (s.type === "TextBox") {
+            try {
+              s.load("textFrame/textRange/text");
+              await ctx.sync();
+              const txt = s?.textFrame?.textRange?.text?.trim();
+              if (txt) {
+                console.log("📝 returning textbox text");
+                return txt;
+              }
+            } catch (e) {
+              console.log("⚠️ failed to read textbox text:", e);
+            }
           }
-          if (s.type === "Table") {
+
+          if (s.type === "Table" && !selectedTableName) {
             selectedTableName = s.name ?? null;
             console.log("📊 table selected; name:", selectedTableName);
           }
         }
+      } else {
+        console.log("ℹ️ no shapes selected");
       }
 
+      // Capture active slide index (best-effort)
       try {
         const slide = ctx.presentation.slides.getActiveSlide();
         slide.load("index");
@@ -78,18 +92,29 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
     return immediateText.trim();
   }
 
-  // ---- ZIP parsing, but now FILTER to only the selected table on the active slide ----
+  // If we don’t know which table/slide to target, don’t parse the whole deck unless allowed
+  if (!selectedTableName || !activeSlideIndex) {
+    console.log(
+      "⛔ no selected table or slide index; not parsing entire deck",
+      { selectedTableName, activeSlideIndex, allowFallbackAllSlides }
+    );
+    if (!allowFallbackAllSlides) {
+      return "Select a single table, then try again (I only parse the selected table).";
+    }
+  }
+
+  // ZIP parsing with strict filters
   console.log(
     "🧭 going to ZIP parse with filters:",
-    JSON.stringify({ activeSlideIndex, selectedTableName })
+    JSON.stringify({ activeSlideIndex, selectedTableName, allowFallbackAllSlides })
   );
 
   try {
     const tZip0 = performance.now();
     const tsv = await readPptTablesAsTSV({
-      preferSlideIndex: activeSlideIndex,
-      filterShapeName: selectedTableName, // << only this table
-      fallbackAllSlides: false,           // << do NOT traverse whole deck by default
+      preferSlideIndex: activeSlideIndex ?? null,
+      filterShapeName: selectedTableName ?? null,
+      fallbackAllSlides: !!allowFallbackAllSlides,
     });
     console.log(
       `📦 ZIP parse finished in ${Math.round(performance.now() - tZip0)} ms`
@@ -115,19 +140,19 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
  * ------------------------------------------------------------------------------------------------*/
 
 type ReadTablesOpts = {
-  /** 1-based index of the active slide to read (strongly recommended) */
-  preferSlideIndex?: number | null;
-  /** If provided, only extract the table whose graphicFrame cNvPr@name equals this value */
-  filterShapeName?: string | null;
-  /** If true and preferred slide missing, parse all slides (not recommended for your case) */
-  fallbackAllSlides?: boolean;
+  preferSlideIndex?: number | null;       // 1-based slide index
+  filterShapeName?: string | null;        // match <p:cNvPr name="…">
+  fallbackAllSlides?: boolean;            // if true, roam all slides when preferred not found
 };
 
 export async function readPptTablesAsTSV(
   opts: ReadTablesOpts = {}
 ): Promise<string> {
-  const { preferSlideIndex = null, filterShapeName = null, fallbackAllSlides = false } =
-    opts;
+  const {
+    preferSlideIndex = null,
+    filterShapeName = null,
+    fallbackAllSlides = false,
+  } = opts;
 
   console.log(
     "🔧 [readPptTablesAsTSV] opts:",
@@ -151,6 +176,7 @@ export async function readPptTablesAsTSV(
 
   console.log("📄 slide XMLs:", slidePaths.length);
 
+  // Target slide(s)
   let targets: string[] = slidePaths;
   if (preferSlideIndex) {
     const specific = slidePaths.filter((p) =>
@@ -165,6 +191,9 @@ export async function readPptTablesAsTSV(
     } else {
       console.log("↪️ preferred slide not found; falling back to all slides");
     }
+  } else if (!fallbackAllSlides) {
+    console.log("⛔ no preferred slide provided; not falling back");
+    return "";
   }
 
   let out: string[] = [];
@@ -180,7 +209,8 @@ export async function readPptTablesAsTSV(
       ")"
     );
     out.push(...tsvBlocks);
-    // if we found the selected table, we can stop
+
+    // If filtering by name and we found the match, we can stop.
     if (filterShapeName && tsvBlocks.length > 0) break;
   }
 
@@ -244,7 +274,7 @@ function getSliceAsync(file: Office.File, index: number) {
 /**
  * If filterShapeName is provided, find <p:graphicFrame> whose
  * <p:nvGraphicFramePr><p:cNvPr name="filterShapeName"> and extract its <a:tbl>.
- * Otherwise, extract all tables on the slide.
+ * Otherwise (and only if allowed by caller), extract all tables on the slide.
  */
 function extractTablesFromSlideXML(
   xml: string,
@@ -259,7 +289,7 @@ function extractTablesFromSlideXML(
   const doc = new DOMParser().parseFromString(xml, "application/xml");
 
   if (filterShapeName) {
-    // Find the matching graphicFrame by cNvPr@name
+    // Match graphicFrame by cNvPr@name
     const frames = Array.from(doc.getElementsByTagNameNS("*", "graphicFrame"));
     console.log("🔎 graphicFrame count:", frames.length);
 
@@ -270,7 +300,9 @@ function extractTablesFromSlideXML(
       if (name === filterShapeName) {
         console.log("🎯 matched graphicFrame by name:", name);
         const graphic = firstChildByLocalName(gf, "graphic");
-        const graphicData = graphic ? firstChildByLocalName(graphic, "graphicData") : null;
+        const graphicData = graphic
+          ? firstChildByLocalName(graphic, "graphicData")
+          : null;
         const tbl = graphicData ? firstChildByLocalName(graphicData, "tbl") : null;
         if (!tbl) {
           console.log("⚠️ matched frame has no <tbl> inside");
@@ -283,9 +315,9 @@ function extractTablesFromSlideXML(
     return [];
   }
 
-  // no filter → all tables on slide
+  // No filter → caller should have allowed fallback; still log
   const tables: Element[] = [...Array.from(doc.getElementsByTagNameNS("*", "tbl"))];
-  console.log("🔎 <tbl> count:", tables.length);
+  console.log("🔎 <tbl> count (no filter):", tables.length);
   return tables.map((t, i) => tableElementToTSV(t, i)).filter((s) => s.trim());
 }
 
