@@ -1,379 +1,337 @@
+// npm i jszip
+import JSZip from "jszip";
+
+/**
+ * Try: (1) selected text, (2) selected text box, (3) if a Table is selected (or nothing else),
+ * parse the PPTX ZIP and extract tables (TSV). Very verbose logging included.
+ */
 export async function getPptSelectedTextOrShape(): Promise<string> {
-  console.log("🚀 Starting automated table extraction");
-  
-  return PowerPoint.run(async (ctx) => {
+  const t0 = performance.now();
+  console.log("🚀 [getPptSelectedTextOrShape] start");
+
+  // track if we saw a Table in the selection so we know whether to prioritize that slide
+  let sawSelectedTable = false;
+  let activeSlideIndex: number | null = null;
+
+  const textFromSelectionOrShape = await PowerPoint.run(async (ctx) => {
     try {
-      // 1) Try highlighted text first
+      console.log("🔎 step 1: try highlighted text");
       const sel = ctx.presentation.getSelectedTextRangeOrNullObject();
       await ctx.sync();
-      
       if (!sel.isNullObject) {
         sel.load("text");
         await ctx.sync();
-        const textResult = (sel.text ?? "").trim();
-        if (textResult) {
-          return textResult;
-        }
+        const t = (sel.text ?? "").trim();
+        console.log("🖱️ selected text:", JSON.stringify(t));
+        if (t) return t;
+      } else {
+        console.log("ℹ️ no selected text range");
       }
 
-      // 2) Check selected shapes
+      console.log("🔎 step 2: check selected shapes");
       const shapes = ctx.presentation.getSelectedShapes();
       shapes.load("items");
       await ctx.sync();
-      
+      console.log("📦 selected shapes count:", shapes.items.length);
+
       if (shapes.items.length > 0) {
-        const shape = shapes.items[0];
-        shape.load("type,name");
+        // load text props on each shape
+        shapes.items.forEach((s) =>
+          s.load("type,name,hasText,textFrame/textRange/text")
+        );
         await ctx.sync();
-        
-        if (shape.type === "Table") {
-          console.log("🏗️ Table detected, trying automated extraction methods...");
-          
-          // Method 1: Advanced OOXML parsing
-          const ooxmlText = await extractTableViaAdvancedOOXML(ctx, shape);
-          if (ooxmlText) return ooxmlText;
-          
-          // Method 2: PowerPoint COM automation (if available)
-          const comText = await extractTableViaCOM(ctx, shape);
-          if (comText) return comText;
-          
-          // Method 3: Try undocumented Office.js properties
-          const undocumentedText = await extractTableViaUndocumentedAPI(ctx, shape);
-          if (undocumentedText) return undocumentedText;
-          
-          // Method 4: Binary extraction approach
-          const binaryText = await extractTableViaBinaryMethod(ctx);
-          if (binaryText) return binaryText;
-          
-          console.log("❌ All automated methods failed");
-          return "Table detected but extraction not supported by current PowerPoint API";
+
+        // first see if a text box is selected
+        for (const s of shapes.items as any[]) {
+          console.log(
+            `• shape: name=${s.name} type=${s.type} hasText=${s.hasText}`
+          );
+          if (s.type === "TextBox" && s.textFrame?.textRange?.text) {
+            const txt = (s.textFrame.textRange.text ?? "").trim();
+            console.log("📝 text from TextBox:", JSON.stringify(txt));
+            if (txt) return txt;
+          }
+          if (s.type === "Table") {
+            sawSelectedTable = true;
+          }
         }
-        
-        // Handle regular text shapes
-        return await extractRegularTextShape(ctx, shape);
+      } else {
+        console.log("ℹ️ no shapes selected");
       }
-      
-      return "";
-    } catch (error) {
-      console.error("💥 Fatal error:", error);
+
+      // Nice-to-have: capture active slide index to narrow ZIP parsing later
+      try {
+        const slide = ctx.presentation.slides.getActiveSlide();
+        slide.load("index");
+        await ctx.sync();
+        activeSlideIndex = (slide as any).index ?? null; // often 1-based
+        console.log("📍 active slide index (host-reported):", activeSlideIndex);
+      } catch (e) {
+        console.log("⚠️ could not read active slide index:", e);
+      }
+
+      return ""; // fall through to ZIP parsing
+    } catch (err) {
+      console.error("💥 error during selection/textbox path:", err);
       return "";
     }
   });
-}
 
-// Method 1: Advanced OOXML with comprehensive XML parsing
-async function extractTableViaAdvancedOOXML(ctx: PowerPoint.RequestContext, shape: PowerPoint.Shape): Promise<string> {
-  console.log("🔄 Method 1: Advanced OOXML extraction");
-  
-  try {
-    // Try multiple OOXML sources
-    const sources = [
-      async () => {
-        const ooxml = shape.getOoxml();
-        await ctx.sync();
-        return ooxml.value;
-      },
-      async () => {
-        const slide = ctx.presentation.slides.getActiveSlide();
-        const ooxml = slide.getOoxml();
-        await ctx.sync();
-        return ooxml.value;
-      },
-      async () => {
-        const ooxml = ctx.presentation.getOoxml();
-        await ctx.sync();
-        return ooxml.value;
-      }
-    ];
-    
-    for (const source of sources) {
-      try {
-        const xml = await source();
-        const tableText = parseAdvancedTableXML(xml);
-        if (tableText) {
-          console.log("✅ OOXML extraction successful");
-          return tableText;
-        }
-      } catch (e) {
-        console.log("OOXML source failed, trying next...");
-      }
-    }
-  } catch (error) {
-    console.log("❌ Advanced OOXML failed:", error);
+  if (textFromSelectionOrShape?.trim()) {
+    console.log(
+      `✅ [getPptSelectedTextOrShape] returning plain text in ${
+        Math.round(performance.now() - t0)
+      } ms`
+    );
+    return textFromSelectionOrShape.trim();
   }
-  
+
+  // If we’re here, either a table was selected or nothing readable was found.
+  console.log(
+    `🧭 proceeding to ZIP parse (sawSelectedTable=${sawSelectedTable}, activeSlideIndex=${activeSlideIndex})`
+  );
+  try {
+    const tZip0 = performance.now();
+    const tsv = await readPptTablesAsTSV({
+      preferSlideIndex: sawSelectedTable ? activeSlideIndex : null, // parse only selected slide’s XML if we know it
+      fallbackAllSlides: true,
+    });
+    const ms = Math.round(performance.now() - tZip0);
+    console.log(`📦 ZIP parse finished in ${ms} ms`);
+    if (tsv.trim()) {
+      console.log(
+        `✅ [getPptSelectedTextOrShape] returning TSV (${tsv.split("\n\n").length} table(s)) in ${
+          Math.round(performance.now() - t0)
+        } ms`
+      );
+      return tsv;
+    }
+    console.log("❌ ZIP parse produced no tables");
+  } catch (zipErr) {
+    console.error("💥 ZIP parse failed:", zipErr);
+  }
+
+  console.log(
+    `🫤 [getPptSelectedTextOrShape] nothing extracted in ${
+      Math.round(performance.now() - t0)
+    } ms`
+  );
   return "";
 }
 
-// Enhanced XML parser with multiple PowerPoint table formats
-function parseAdvancedTableXML(xml: string): string {
-  console.log("🔍 Advanced XML parsing started");
-  
+/* --------------------------------------------------------------------------------------
+ * ZIP parsing pipeline with LOTS of logs
+ * ------------------------------------------------------------------------------------*/
+
+type ReadTablesOpts = {
+  /** 1-based slide index to prefer; if set we will parse only that slide’s XML. */
+  preferSlideIndex?: number | null;
+  /** If true and preferred slide not found, we parse all slides. */
+  fallbackAllSlides?: boolean;
+};
+
+export async function readPptTablesAsTSV(
+  opts: ReadTablesOpts = {}
+): Promise<string> {
+  const { preferSlideIndex = null, fallbackAllSlides = true } = opts;
+  console.log(
+    "🔧 [readPptTablesAsTSV] opts:",
+    JSON.stringify({ preferSlideIndex, fallbackAllSlides })
+  );
+
+  // 1) Download PPTX as zipped arraybuffer
+  console.log("⬇️ fetching PPTX ZIP via Office.context.document.getFileAsync");
+  const zipBuffer = await getPptxZipArrayBuffer();
+  console.log("✅ ZIP bytes:", (zipBuffer.byteLength / 1024).toFixed(1), "KB");
+
+  // 2) Unzip with JSZip
+  console.log("🧵 unzipping with JSZip...");
+  const zip = await JSZip.loadAsync(zipBuffer);
+  console.log("✅ ZIP loaded; file count:", Object.keys(zip.files).length);
+
+  // 3) List slide XMLs
+  const allSlidePaths = Object.keys(zip.files).filter((p) =>
+    /^ppt\/slides\/slide\d+\.xml$/.test(p)
+  );
+  console.log("📄 slide XMLs found:", allSlidePaths.length);
+
+  allSlidePaths.sort((a, b) => {
+    const na = parseInt(a.match(/slide(\d+)\.xml/)![1], 10);
+    const nb = parseInt(b.match(/slide(\d+)\.xml/)![1], 10);
+    return na - nb;
+  });
+
+  // If we know the preferred slide, try only that one
+  let targets = allSlidePaths;
+  if (preferSlideIndex && Number.isFinite(preferSlideIndex)) {
+    const preferred = allSlidePaths.filter((p) =>
+      p.endsWith(`slide${preferSlideIndex}.xml`)
+    );
+    console.log("🎯 preferred slide match:", preferred);
+    if (preferred.length > 0) {
+      targets = preferred;
+    } else if (!fallbackAllSlides) {
+      console.log("⛔ preferred slide not found, and fallback disabled");
+      return "";
+    } else {
+      console.log("↪️ preferred slide not found, falling back to all slides");
+    }
+  }
+
+  // 4) Parse target slides, collect TSV tables
+  let out: string[] = [];
+  for (const path of targets) {
+    console.log("🧩 parsing", path);
+    const xmlText = await zip.files[path].async("text");
+    const tsvBlocks = extractTablesFromSlideXML(xmlText);
+    console.log(`   📊 tables found in ${path}:`, tsvBlocks.length);
+    out.push(...tsvBlocks);
+  }
+
+  const result = out.join("\n\n").trim();
+  console.log(
+    "🧾 total tables extracted:",
+    out.length,
+    " total chars:",
+    result.length
+  );
+  return result;
+}
+
+/** Stream the current deck into memory as a ZIP ArrayBuffer */
+async function getPptxZipArrayBuffer(): Promise<ArrayBuffer> {
+  const file = await getFileAsync(Office.FileType.Compressed);
+  console.log("📦 file acquired:", {
+    sliceCount: file.sliceCount,
+    sizeEstimateKB: "unknown",
+  });
+
   try {
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(xml, 'text/xml');
-    
-    // Multiple table detection strategies
-    const tableSelectors = [
-      'a\\:tbl, tbl',
-      '[*|localName="tbl"]',
-      'p\\:graphicFrame',
-      'a\\:graphic a\\:graphicData a\\:tbl',
-      'p\\:sp[contains(@*, "table")]'
-    ];
-    
-    for (const selector of tableSelectors) {
-      const tables = doc.querySelectorAll(selector);
-      if (tables.length > 0) {
-        console.log(`📊 Found ${tables.length} tables with selector: ${selector}`);
-        
-        for (const table of tables) {
-          const tableText = extractTableFromElement(table);
-          if (tableText) return tableText;
-        }
+    const chunks: Uint8Array[] = [];
+    for (let i = 0; i < file.sliceCount; i++) {
+      const slice = await getSliceAsync(file, i);
+      const arr = slice.value.data as number[]; // host returns number[]
+      const u8 = new Uint8Array(arr);
+      chunks.push(u8);
+      if (i === 0 || (i + 1) === file.sliceCount || (i + 1) % 10 === 0) {
+        console.log(
+          `   🔹 slice ${i + 1}/${file.sliceCount} (${u8.length} bytes)`
+        );
       }
     }
-    
-    // Alternative: Look for table-like structures in graphic frames
-    const graphicFrames = doc.querySelectorAll('p\\:graphicFrame, graphicFrame');
-    for (const frame of graphicFrames) {
-      const tableData = extractTableFromGraphicFrame(frame);
-      if (tableData) return tableData;
+    const totalLen = chunks.reduce((s, u) => s + u.length, 0);
+    console.log("📏 total ZIP bytes:", totalLen);
+
+    const merged = new Uint8Array(totalLen);
+    let off = 0;
+    for (const u of chunks) {
+      merged.set(u, off);
+      off += u.length;
     }
-    
-    console.log("❌ No tables found in XML");
-    return "";
-    
-  } catch (error) {
-    console.log("❌ XML parsing error:", error);
-    return "";
+    return merged.buffer;
+  } finally {
+    file.closeAsync(() => console.log("🧹 file closed"));
   }
 }
 
-function extractTableFromElement(tableElement: Element): string {
-  // Multiple row detection strategies
-  const rowSelectors = ['a\\:tr, tr', '[*|localName="tr"]', 'a\\:gridCol'];
-  
-  for (const rowSelector of rowSelectors) {
-    const rows = tableElement.querySelectorAll(rowSelector);
-    if (rows.length === 0) continue;
-    
-    let tableText = "";
-    
-    rows.forEach((row, rowIndex) => {
-      const cellSelectors = ['a\\:tc, tc', '[*|localName="tc"]', 'a\\:t, t'];
-      
-      for (const cellSelector of cellSelectors) {
-        const cells = row.querySelectorAll(cellSelector);
-        if (cells.length === 0) continue;
-        
-        let rowText = "";
-        cells.forEach((cell, cellIndex) => {
-          const text = extractTextFromCell(cell);
-          if (text) {
-            rowText += text;
-            if (cellIndex < cells.length - 1) rowText += "\t";
-          }
-        });
-        
-        if (rowText.trim()) {
-          tableText += rowText;
-          if (rowIndex < rows.length - 1) tableText += "\n";
-        }
-        break; // Found cells, no need to try other selectors
+function getFileAsync(type: Office.FileType): Promise<Office.File> {
+  return new Promise((resolve, reject) => {
+    Office.context.document.getFileAsync(type, (res) => {
+      if (res.status === Office.AsyncResultStatus.Succeeded) resolve(res.value);
+      else {
+        console.error("❌ getFileAsync failed:", res.error);
+        reject(res.error);
       }
     });
-    
-    if (tableText.trim()) {
-      console.log("✅ Table extracted from XML");
-      return tableText;
-    }
-  }
-  
-  return "";
+  });
 }
 
-function extractTextFromCell(cellElement: Element): string {
-  // Multiple text extraction approaches
-  const textSelectors = [
-    'a\\:t, t',
-    '[*|localName="t"]',
-    'a\\:p a\\:t',
-    'p t',
-    'a\\:r a\\:t'
+function getSliceAsync(file: Office.File, index: number) {
+  return new Promise<Office.AsyncResult<Office.Slice>>((resolve, reject) => {
+    file.getSliceAsync(index, (res) => {
+      if (res.status === Office.AsyncResultStatus.Succeeded) resolve(res);
+      else {
+        console.error(`❌ getSliceAsync(${index}) failed:`, res.error);
+        reject(res.error);
+      }
+    });
+  });
+}
+
+/* --------------------------------------------------------------------------------------
+ * XML parsing helpers with LOTS of logs
+ * ------------------------------------------------------------------------------------*/
+
+/** Parse one slide’s XML and return an array of TSV table strings */
+function extractTablesFromSlideXML(xml: string): string[] {
+  console.log("🔬 parse slide XML (length:", xml.length, ")");
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(xml, "application/xml");
+
+  // Find all <a:tbl> (or any namespace tbl)
+  const tables: Element[] = [
+    ...Array.from(doc.getElementsByTagNameNS("*", "tbl")),
   ];
-  
-  for (const selector of textSelectors) {
-    const textElements = cellElement.querySelectorAll(selector);
-    if (textElements.length > 0) {
-      let cellText = "";
-      textElements.forEach(el => {
-        const text = el.textContent || el.innerHTML || "";
-        if (text.trim()) cellText += text.trim() + " ";
-      });
-      if (cellText.trim()) return cellText.trim();
-    }
-  }
-  
-  // Fallback: direct text content
-  const directText = cellElement.textContent || cellElement.innerHTML || "";
-  return directText.trim();
+  console.log("🔎 <tbl> count:", tables.length);
+
+  const results: string[] = [];
+  tables.forEach((tbl, idx) => {
+    const tsv = tableElementToTSV(tbl, idx);
+    if (tsv.trim()) results.push(tsv);
+  });
+  return results;
 }
 
-function extractTableFromGraphicFrame(frame: Element): string {
-  // Look for table data in graphic frame structures
-  const tableData = frame.querySelector('a\\:graphic a\\:graphicData');
-  if (tableData) {
-    return extractTableFromElement(tableData);
+/** Convert <a:tbl> to TSV by walking <a:tr>/<a:tc> and collecting <a:t> text. */
+function tableElementToTSV(tblEl: Element, tblIndex: number): string {
+  const rows = Array.from(tblEl.getElementsByTagNameNS("*", "tr"));
+  console.log(`🧱 table#${tblIndex} rows:`, rows.length);
+
+  const lines: string[] = [];
+  for (let r = 0; r < rows.length; r++) {
+    const tr = rows[r];
+    const cells = Array.from(tr.getElementsByTagNameNS("*", "tc"));
+    const cellValues = cells.map((tc, c) => {
+      const txt = getTextFromCell(tc);
+      console.log(`   • r${r}c${c} text=`, JSON.stringify(txt));
+      return txt;
+    });
+
+    // Trim trailing empty cells for a cleaner TSV
+    let end = cellValues.length;
+    while (end > 0 && (!cellValues[end - 1] || !cellValues[end - 1].trim()))
+      end--;
+    const line = cellValues.slice(0, end).join("\t");
+    lines.push(line);
   }
-  return "";
+
+  // Remove trailing empty rows
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+
+  const tsv = lines.join("\n");
+  console.log(`🧾 table#${tblIndex} TSV length:`, tsv.length);
+  return tsv;
 }
 
-// Method 2: COM Automation (if available in environment)
-async function extractTableViaCOM(ctx: PowerPoint.RequestContext, shape: PowerPoint.Shape): Promise<string> {
-  console.log("🔄 Method 2: COM automation attempt");
-  
-  try {
-    // This works only if PowerPoint COM objects are available
-    // @ts-ignore - COM objects not in TypeScript definitions
-    if (typeof ActiveXObject !== 'undefined') {
-      const ppt = new ActiveXObject("PowerPoint.Application");
-      const presentation = ppt.ActivePresentation;
-      const slide = presentation.Slides(ppt.ActiveWindow.View.Slide.SlideIndex);
-      
-      // Find the table shape
-      for (let i = 1; i <= slide.Shapes.Count; i++) {
-        const shapeObj = slide.Shapes(i);
-        if (shapeObj.HasTable) {
-          const table = shapeObj.Table;
-          let tableText = "";
-          
-          for (let row = 1; row <= table.Rows.Count; row++) {
-            for (let col = 1; col <= table.Columns.Count; col++) {
-              const cellText = table.Cell(row, col).Shape.TextFrame.TextRange.Text;
-              tableText += cellText + (col < table.Columns.Count ? "\t" : "");
-            }
-            tableText += row < table.Rows.Count ? "\n" : "";
-          }
-          
-          console.log("✅ COM extraction successful");
-          return tableText;
-        }
-      }
-    }
-  } catch (error) {
-    console.log("❌ COM automation failed:", error);
-  }
-  
-  return "";
-}
+/** Extract all text within a cell, respecting <a:br/> as newlines. */
+function getTextFromCell(tc: Element): string {
+  const doc = tc.ownerDocument!;
+  const walker = doc.createTreeWalker(
+    tc,
+    NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT
+  );
 
-// Method 3: Try undocumented Office.js properties
-async function extractTableViaUndocumentedAPI(ctx: PowerPoint.RequestContext, shape: PowerPoint.Shape): Promise<string> {
-  console.log("🔄 Method 3: Undocumented API exploration");
-  
-  try {
-    // Load everything possible on the shape
-    shape.load();
-    await ctx.sync();
-    
-    // Try accessing potential hidden table properties
-    const hiddenProperties = ['_table', 'tableData', 'content', 'data', 'cells', 'rows', 'columns'];
-    
-    for (const prop of hiddenProperties) {
-      if ((shape as any)[prop]) {
-        console.log(`📋 Found hidden property: ${prop}`);
-        const data = (shape as any)[prop];
-        
-        // Try to extract text from the hidden property
-        if (typeof data === 'string') return data;
-        if (data.text) return data.text;
-        if (data.toString && typeof data.toString === 'function') {
-          const text = data.toString();
-          if (text !== '[object Object]') return text;
-        }
-      }
+  let n: Node | null = walker.nextNode();
+  let out = "";
+  while (n) {
+    if (n.nodeType === Node.ELEMENT_NODE) {
+      const el = n as Element;
+      if (el.localName === "t") out += el.textContent ?? "";
+      else if (el.localName === "br") out += "\n";
     }
-    
-    // Try accessing the shape's internal structure
-    const shapeAny = shape as any;
-    if (shapeAny._objectPath && shapeAny._objectPath._objectPathInfo) {
-      console.log("📋 Exploring object path info");
-      // This might contain internal references we can use
-    }
-    
-  } catch (error) {
-    console.log("❌ Undocumented API exploration failed:", error);
+    n = walker.nextNode();
   }
-  
-  return "";
-}
 
-// Method 4: Binary/Raw data extraction approach
-async function extractTableViaBinaryMethod(ctx: PowerPoint.RequestContext): Promise<string> {
-  console.log("🔄 Method 4: Binary extraction attempt");
-  
-  try {
-    // Try to access presentation as binary data and extract table information
-    // This is a long shot but worth trying
-    
-    // Get all slides and their content
-    const slides = ctx.presentation.slides;
-    slides.load("items");
-    await ctx.sync();
-    
-    for (const slide of slides.items) {
-      const shapes = slide.shapes;
-      shapes.load("items");
-      await ctx.sync();
-      
-      for (const shape of shapes.items) {
-        shape.load("type,name");
-        await ctx.sync();
-        
-        if (shape.type === "Table") {
-          // Try to get any available text content through alternative means
-          try {
-            // Load all possible properties
-            (shape as any).load("*");
-            await ctx.sync();
-            
-            // Check if we can access the shape's XML directly
-            if ((shape as any).xml) {
-              const tableText = parseAdvancedTableXML((shape as any).xml);
-              if (tableText) return tableText;
-            }
-            
-          } catch (e) {
-            console.log("Binary method shape processing failed");
-          }
-        }
-      }
-    }
-    
-  } catch (error) {
-    console.log("❌ Binary extraction failed:", error);
-  }
-  
-  return "";
-}
-
-// Helper function for regular text shapes
-async function extractRegularTextShape(ctx: PowerPoint.RequestContext, shape: PowerPoint.Shape): Promise<string> {
-  try {
-    shape.load("textFrame");
-    await ctx.sync();
-    if (shape.textFrame) {
-      shape.textFrame.load("textRange");
-      await ctx.sync();
-      if (shape.textFrame.textRange) {
-        shape.textFrame.textRange.load("text");
-        await ctx.sync();
-        return shape.textFrame.textRange.text?.trim() || "";
-      }
-    }
-  } catch (e) {
-    console.log("Regular text extraction failed:", e);
-  }
-  return "";
+  out = out.replace(/\s+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  return out;
 }
