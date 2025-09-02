@@ -1,21 +1,25 @@
+// table-extract.ts
 // npm i jszip
 import JSZip from "jszip";
 
 /**
- * Selected text → selected text box → if a TABLE is selected,
- * parse ONLY that table on the active slide by matching the shape name.
+ * Main entry — returns either:
+ *  • selected text (if text is highlighted), or
+ *  • selected textbox text, or
+ *  • TSV for the **selected table only** (matched by shape name in slide XML).
+ *
+ * It does **not** parse the whole deck unless a table is actually selected.
  */
-export async function getPptSelectedTextOrShape(
-  allowFallbackAllSlides = false // keep false to avoid “whole deck” parsing
-): Promise<string> {
+export async function getPptSelectedTextOrShape(): Promise<string> {
   const t0 = performance.now();
   console.log("🚀 [getPptSelectedTextOrShape] start");
 
-  let activeSlideIndex: number | null = null; // 1-based on most hosts
   let selectedTableName: string | null = null;
+  let activeSlideIndex: number | null = null; // optional; not available on all hosts
 
   const immediateText = await PowerPoint.run(async (ctx) => {
     try {
+      // 1) Selected text range
       console.log("🔎 step 1: try highlighted text");
       const sel = ctx.presentation.getSelectedTextRangeOrNullObject();
       await ctx.sync();
@@ -29,6 +33,7 @@ export async function getPptSelectedTextOrShape(
         console.log("ℹ️ no selected text range");
       }
 
+      // 2) Selected shapes → textbox or table
       console.log("🔎 step 2: inspect selected shapes");
       const shapes = ctx.presentation.getSelectedShapes();
       shapes.load("items");
@@ -36,28 +41,20 @@ export async function getPptSelectedTextOrShape(
       console.log("📦 selected shapes:", shapes.items.length);
 
       if (shapes.items.length > 0) {
-        // Load only *valid* props for PowerPoint.Shape
-        shapes.items.forEach((s) => s.load("type,name"));
+        shapes.items.forEach((s) => s.load("type,name,textFrame/textRange/text"));
         await ctx.sync();
 
         for (const s of shapes.items as any[]) {
           console.log(`• shape name=${s.name} type=${s.type}`);
 
-          // If a text box is selected, load its text lazily
-          if (s.type === "TextBox") {
-            try {
-              s.load("textFrame/textRange/text");
-              await ctx.sync();
-              const txt = s?.textFrame?.textRange?.text?.trim();
-              if (txt) {
-                console.log("📝 returning textbox text");
-                return txt;
-              }
-            } catch (e) {
-              console.log("⚠️ failed to read textbox text:", e);
-            }
+          // Textbox returns directly
+          const txt = s?.textFrame?.textRange?.text?.trim?.();
+          if (s.type === "TextBox" && txt) {
+            console.log("📝 returning textbox text");
+            return txt;
           }
 
+          // Table: capture name to target in XML
           if (s.type === "Table" && !selectedTableName) {
             selectedTableName = s.name ?? null;
             console.log("📊 table selected; name:", selectedTableName);
@@ -67,15 +64,22 @@ export async function getPptSelectedTextOrShape(
         console.log("ℹ️ no shapes selected");
       }
 
-      // Capture active slide index (best-effort)
-      try {
-        const slide = ctx.presentation.slides.getActiveSlide();
-        slide.load("index");
-        await ctx.sync();
-        activeSlideIndex = (slide as any).index ?? null;
-        console.log("📍 active slide index:", activeSlideIndex);
-      } catch (e) {
-        console.log("⚠️ could not read active slide index:", e);
+      // 3) Optional: try to get active slide index (not on all hosts)
+      const hasGetActiveSlide =
+        (ctx.presentation as any).slides &&
+        typeof (ctx.presentation as any).slides.getActiveSlide === "function";
+      if (hasGetActiveSlide) {
+        try {
+          const slide = (ctx.presentation as any).slides.getActiveSlide();
+          slide.load("index");
+          await ctx.sync();
+          activeSlideIndex = (slide as any).index ?? null; // typically 1-based
+          console.log("📍 active slide index:", activeSlideIndex);
+        } catch (e) {
+          console.log("⚠️ could not read active slide index:", e);
+        }
+      } else {
+        console.log("ℹ️ getActiveSlide not available on this host; will scan by name");
       }
 
       return "";
@@ -85,141 +89,45 @@ export async function getPptSelectedTextOrShape(
     }
   });
 
+  // If we already have plain text, return it.
   if (immediateText?.trim()) {
-    console.log(
-      `✅ plain text path in ${Math.round(performance.now() - t0)} ms`
-    );
+    console.log(`✅ plain text path in ${Math.round(performance.now() - t0)} ms`);
     return immediateText.trim();
   }
 
-  // If we don’t know which table/slide to target, don’t parse the whole deck unless allowed
-  if (!selectedTableName || !activeSlideIndex) {
-    console.log(
-      "⛔ no selected table or slide index; not parsing entire deck",
-      { selectedTableName, activeSlideIndex, allowFallbackAllSlides }
-    );
-    if (!allowFallbackAllSlides) {
-      return "Select a single table, then try again (I only parse the selected table).";
-    }
+  // If no table was selected, stop (we refuse to roam the whole deck).
+  if (!selectedTableName) {
+    console.log("⛔ no selected table name; not parsing entire deck");
+    return "Select a single table, then try again.";
   }
 
-  // ZIP parsing with strict filters
   console.log(
     "🧭 going to ZIP parse with filters:",
-    JSON.stringify({ activeSlideIndex, selectedTableName, allowFallbackAllSlides })
+    JSON.stringify({ activeSlideIndex, selectedTableName })
   );
 
-  try {
-    const tZip0 = performance.now();
-    const tsv = await readPptTablesAsTSV({
-      preferSlideIndex: activeSlideIndex ?? null,
-      filterShapeName: selectedTableName ?? null,
-      fallbackAllSlides: !!allowFallbackAllSlides,
-    });
+  // Parse only the selected table (match by shape name inside slide XML)
+  const tsv = await readSelectedTableByNameTSV({
+    selectedTableName: selectedTableName!,
+    preferSlideIndex: activeSlideIndex ?? null,
+  });
+
+  if (tsv.trim()) {
     console.log(
-      `📦 ZIP parse finished in ${Math.round(performance.now() - tZip0)} ms`
+      `✅ returning selected table TSV in ${Math.round(performance.now() - t0)} ms`
     );
-    if (tsv.trim()) {
-      console.log(
-        `✅ returning selected table TSV in ${Math.round(
-          performance.now() - t0
-        )} ms`
-      );
-      return tsv;
-    }
-    console.log("❌ no TSV found for the selected table/slide");
-  } catch (zipErr) {
-    console.error("💥 ZIP parse failed:", zipErr);
+    return tsv;
   }
 
-  return "";
+  console.log("❌ could not locate the selected table in slide XML");
+  return "Couldn’t locate the selected table in the slide XML.";
 }
 
-/* ------------------------------------------------------------------------------------------------
- * ZIP parsing with shape-name filter (matches <p:cNvPr name="…"> inside graphicFrame on the slide)
- * ------------------------------------------------------------------------------------------------*/
+/* ======================================================================================
+ *  ZIP helpers
+ * ====================================================================================*/
 
-type ReadTablesOpts = {
-  preferSlideIndex?: number | null;       // 1-based slide index
-  filterShapeName?: string | null;        // match <p:cNvPr name="…">
-  fallbackAllSlides?: boolean;            // if true, roam all slides when preferred not found
-};
-
-export async function readPptTablesAsTSV(
-  opts: ReadTablesOpts = {}
-): Promise<string> {
-  const {
-    preferSlideIndex = null,
-    filterShapeName = null,
-    fallbackAllSlides = false,
-  } = opts;
-
-  console.log(
-    "🔧 [readPptTablesAsTSV] opts:",
-    JSON.stringify({ preferSlideIndex, filterShapeName, fallbackAllSlides })
-  );
-
-  console.log("⬇️ fetching PPTX ZIP");
-  const zipBuffer = await getPptxZipArrayBuffer();
-  console.log("✅ ZIP bytes:", (zipBuffer.byteLength / 1024).toFixed(1), "KB");
-
-  console.log("🧵 unzipping...");
-  const zip = await JSZip.loadAsync(zipBuffer);
-
-  const slidePaths = Object.keys(zip.files)
-    .filter((p) => /^ppt\/slides\/slide\d+\.xml$/.test(p))
-    .sort((a, b) => {
-      const na = parseInt(a.match(/slide(\d+)\.xml/)![1], 10);
-      const nb = parseInt(b.match(/slide(\d+)\.xml/)![1], 10);
-      return na - nb;
-    });
-
-  console.log("📄 slide XMLs:", slidePaths.length);
-
-  // Target slide(s)
-  let targets: string[] = slidePaths;
-  if (preferSlideIndex) {
-    const specific = slidePaths.filter((p) =>
-      p.endsWith(`slide${preferSlideIndex}.xml`)
-    );
-    if (specific.length) {
-      targets = specific;
-      console.log("🎯 targeting only:", targets[0]);
-    } else if (!fallbackAllSlides) {
-      console.log("⛔ preferred slide not found; not falling back");
-      return "";
-    } else {
-      console.log("↪️ preferred slide not found; falling back to all slides");
-    }
-  } else if (!fallbackAllSlides) {
-    console.log("⛔ no preferred slide provided; not falling back");
-    return "";
-  }
-
-  let out: string[] = [];
-  for (const path of targets) {
-    console.log("🧩 parse", path);
-    const xmlText = await zip.files[path].async("text");
-    const tsvBlocks = extractTablesFromSlideXML(xmlText, filterShapeName);
-    console.log(
-      `   📊 tables returned from ${path}:`,
-      tsvBlocks.length,
-      "(filtered by name:",
-      filterShapeName,
-      ")"
-    );
-    out.push(...tsvBlocks);
-
-    // If filtering by name and we found the match, we can stop.
-    if (filterShapeName && tsvBlocks.length > 0) break;
-  }
-
-  const result = out.join("\n\n").trim();
-  console.log("🧾 final TSV length:", result.length);
-  return result;
-}
-
-/** stream the current presentation into memory as a ZIP ArrayBuffer */
+/** Stream the current deck into memory as a ZIP ArrayBuffer. */
 async function getPptxZipArrayBuffer(): Promise<ArrayBuffer> {
   const file = await getFileAsync(Office.FileType.Compressed);
   console.log("📦 file acquired; slices:", file.sliceCount);
@@ -235,6 +143,7 @@ async function getPptxZipArrayBuffer(): Promise<ArrayBuffer> {
     }
     const total = chunks.reduce((s, u) => s + u.length, 0);
     console.log("📏 total bytes:", total);
+
     const merged = new Uint8Array(total);
     let off = 0;
     for (const u of chunks) {
@@ -246,6 +155,7 @@ async function getPptxZipArrayBuffer(): Promise<ArrayBuffer> {
     file.closeAsync(() => console.log("🧹 file closed"));
   }
 }
+
 function getFileAsync(type: Office.FileType): Promise<Office.File> {
   return new Promise((resolve, reject) => {
     Office.context.document.getFileAsync(type, (res) => {
@@ -257,6 +167,7 @@ function getFileAsync(type: Office.FileType): Promise<Office.File> {
     });
   });
 }
+
 function getSliceAsync(file: Office.File, index: number) {
   return new Promise<Office.AsyncResult<Office.Slice>>((resolve, reject) => {
     file.getSliceAsync(index, (res) => {
@@ -269,56 +180,114 @@ function getSliceAsync(file: Office.File, index: number) {
   });
 }
 
-/* --------------------------- XML helpers (with filtering) --------------------------- */
+/* ======================================================================================
+ *  Targeted: read ONLY the selected table by matching the shape name in slide XML
+ * ====================================================================================*/
 
-/**
- * If filterShapeName is provided, find <p:graphicFrame> whose
- * <p:nvGraphicFramePr><p:cNvPr name="filterShapeName"> and extract its <a:tbl>.
- * Otherwise (and only if allowed by caller), extract all tables on the slide.
- */
-function extractTablesFromSlideXML(
-  xml: string,
-  filterShapeName: string | null
-): string[] {
+type ReadByNameOpts = {
+  selectedTableName: string;        // e.g., "Table 4"
+  preferSlideIndex?: number | null; // optional (1-based); if present, we check that slide first
+};
+
+/** Returns TSV for the first table whose <p:cNvPr name="…"> equals the selected shape name. */
+async function readSelectedTableByNameTSV(opts: ReadByNameOpts): Promise<string> {
+  const { selectedTableName, preferSlideIndex = null } = opts;
+  console.log("🔧 [readSelectedTableByNameTSV] opts:", opts);
+
+  const nameCandidates = buildNameCandidates(selectedTableName);
+  console.log("🪪 name candidates:", nameCandidates);
+
+  console.log("⬇️ fetching PPTX ZIP");
+  const zipBuffer = await getPptxZipArrayBuffer();
+  console.log("✅ ZIP bytes:", (zipBuffer.byteLength / 1024).toFixed(1), "KB");
+
+  const zip = await JSZip.loadAsync(zipBuffer);
+  const slidePaths = Object.keys(zip.files)
+    .filter((p) => /^ppt\/slides\/slide\d+\.xml$/.test(p))
+    .sort((a, b) => {
+      const na = parseInt(a.match(/slide(\d+)\.xml/)![1], 10);
+      const nb = parseInt(b.match(/slide(\d+)\.xml/)![1], 10);
+      return na - nb;
+    });
+  console.log("📄 slide XMLs:", slidePaths.length);
+
+  // If we know the active slide, prioritize it (we’ll still bail as soon as we find a match).
+  let ordered = slidePaths.slice();
+  if (preferSlideIndex) {
+    const preferred = `ppt/slides/slide${preferSlideIndex}.xml`;
+    ordered = [preferred, ...slidePaths.filter((p) => p !== preferred)];
+    console.log("🎯 prioritizing", preferred);
+  }
+
+  for (const path of ordered) {
+    console.log("🧩 scanning", path);
+    const xmlText = await zip.files[path].async("text");
+    const tsv = findTableTSVByNameOnSlide(xmlText, nameCandidates);
+    if (tsv) {
+      console.log("✅ match found on", path, "→ returning TSV");
+      return tsv;
+    }
+    console.log("… no match on", path);
+  }
+
+  console.log("❌ no slide contained a matching table name");
+  return "";
+}
+
+/* ======================================================================================
+ *  XML helpers
+ * ====================================================================================*/
+
+/** Robust set of name variants to tolerate spacing/casing differences. */
+function buildNameCandidates(name: string): string[] {
+  const raw = name ?? "";
+  const trimmed = raw.trim();
+  const squashed = trimmed.replace(/\s+/g, " ");
+  const nospace = squashed.replace(/\s+/g, "");
+  const lower = squashed.toLowerCase();
+  const lowerNo = nospace.toLowerCase();
+  return Array.from(new Set([trimmed, squashed, nospace, lower, lowerNo]));
+}
+
+function normalizeName(n: string): string {
+  return (n ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+/** Find the FIRST table on the slide whose graphicFrame cNvPr@name matches one of the candidates. */
+function findTableTSVByNameOnSlide(xml: string, candidates: string[]): string {
   console.log(
-    "🔬 parse slide XML (length:",
+    "🔬 parse slide XML (len:",
     xml.length,
-    ") filterShapeName=",
-    filterShapeName
+    ") candidates:",
+    candidates
   );
   const doc = new DOMParser().parseFromString(xml, "application/xml");
 
-  if (filterShapeName) {
-    // Match graphicFrame by cNvPr@name
-    const frames = Array.from(doc.getElementsByTagNameNS("*", "graphicFrame"));
-    console.log("🔎 graphicFrame count:", frames.length);
+  const frames = Array.from(doc.getElementsByTagNameNS("*", "graphicFrame"));
+  console.log("🔎 graphicFrame count:", frames.length);
 
-    for (const gf of frames) {
-      const nv = firstChildByLocalName(gf, "nvGraphicFramePr");
-      const cNvPr = nv ? firstChildByLocalName(nv, "cNvPr") : null;
-      const name = cNvPr?.getAttribute("name") ?? "";
-      if (name === filterShapeName) {
-        console.log("🎯 matched graphicFrame by name:", name);
-        const graphic = firstChildByLocalName(gf, "graphic");
-        const graphicData = graphic
-          ? firstChildByLocalName(graphic, "graphicData")
-          : null;
-        const tbl = graphicData ? firstChildByLocalName(graphicData, "tbl") : null;
-        if (!tbl) {
-          console.log("⚠️ matched frame has no <tbl> inside");
-          return [];
-        }
-        return [tableElementToTSV(tbl, 0)];
+  for (const gf of frames) {
+    const nv = firstChildByLocalName(gf, "nvGraphicFramePr");
+    const cNvPr = nv ? firstChildByLocalName(nv, "cNvPr") : null;
+    const nameAttr = cNvPr?.getAttribute("name") ?? "";
+    if (nameAttr) console.log("   • frame name:", JSON.stringify(nameAttr));
+
+    if (
+      nameAttr &&
+      candidates.some((c) => normalizeName(nameAttr) === normalizeName(c))
+    ) {
+      console.log("🎯 matched by name:", nameAttr);
+      const graphic = firstChildByLocalName(gf, "graphic");
+      const graphicData = graphic ? firstChildByLocalName(graphic, "graphicData") : null;
+      const tbl = graphicData ? firstChildByLocalName(graphicData, "tbl") : null;
+      if (!tbl) {
+        console.log("⚠️ matched frame has no <tbl>");
+        return "";
       }
+      return tableElementToTSV(tbl, 0);
     }
-    console.log("⚠️ no graphicFrame matched by name; returning []");
-    return [];
   }
-
-  // No filter → caller should have allowed fallback; still log
-  const tables: Element[] = [...Array.from(doc.getElementsByTagNameNS("*", "tbl"))];
-  console.log("🔎 <tbl> count (no filter):", tables.length);
-  return tables.map((t, i) => tableElementToTSV(t, i)).filter((s) => s.trim());
+  return "";
 }
 
 function firstChildByLocalName(parent: Element, local: string): Element | null {
@@ -346,7 +315,7 @@ function tableElementToTSV(tblEl: Element, tblIndex: number): string {
       return t;
     });
 
-    // trim trailing empties
+    // Trim trailing empties for tidy TSV
     let end = vals.length;
     while (end > 0 && (!vals[end - 1] || !vals[end - 1].trim())) end--;
     lines.push(vals.slice(0, end).join("\t"));
@@ -358,6 +327,7 @@ function tableElementToTSV(tblEl: Element, tblIndex: number): string {
   return tsv;
 }
 
+/** Extract text within a cell, honoring <a:br/> as newline. */
 function getTextFromCell(tc: Element): string {
   const doc = tc.ownerDocument!;
   const walker = doc.createTreeWalker(
