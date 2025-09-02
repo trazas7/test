@@ -1,189 +1,206 @@
 export async function getPptSelectedTextOrShape(): Promise<string> {
-  console.log("🚀 Starting getPptSelectedTextOrShape function");
+  console.log("🚀 Starting getPptSelectedTextOrShape with workaround approaches");
   
   return PowerPoint.run(async (ctx) => {
-    console.log("📝 PowerPoint.run context initialized");
-    
     try {
-      // 1) Try highlighted text first
+      // 1) Try highlighted text first (your existing logic)
       console.log("🔍 Step 1: Checking for selected text range");
       const sel = ctx.presentation.getSelectedTextRangeOrNullObject();
       await ctx.sync();
-      console.log("✅ Text range sync completed, checking if null object");
       
       if (!sel.isNullObject) {
-        console.log("📖 Text range found, loading text content");
         sel.load("text");
         await ctx.sync();
-        console.log("📄 Selected text:", sel.text);
         const textResult = (sel.text ?? "").trim();
         if (textResult) {
           console.log("✅ Returning selected text:", textResult);
           return textResult;
         }
-      } else {
-        console.log("❌ No text range selected");
       }
 
-      // 2) Fallback: check if shapes are selected
-      console.log("🔍 Step 2: Checking for selected shapes");
+      // 2) Check selected shapes
       const shapes = ctx.presentation.getSelectedShapes();
       shapes.load("items");
       await ctx.sync();
-      console.log(`📊 Found ${shapes.items.length} selected shapes`);
-
+      
       if (shapes.items.length > 0) {
-        for (let i = 0; i < shapes.items.length; i++) {
-          const shape = shapes.items[i];
-          console.log(`🔍 Processing shape ${i + 1}/${shapes.items.length}`);
+        const shape = shapes.items[0];
+        shape.load("type,name");
+        await ctx.sync();
+        
+        console.log(`Shape detected: ${shape.type} - ${shape.name}`);
+        
+        if (shape.type === "Table") {
+          console.log("🏗️ Table detected, trying workaround methods...");
           
-          // Load basic shape properties
-          console.log("🔧 Loading shape properties...");
-          shape.load("type,name,id");
-          await ctx.sync();
-          
-          console.log(`📋 Shape type: "${shape.type}"`);
-          console.log(`📋 Shape name: "${shape.name}"`);
-          console.log(`📋 Shape id: "${shape.id}"`);
-          
-          // Check what properties are available
-          console.log("🔍 Checking available shape properties...");
-          try {
-            // Try to load all possible properties to see what's available
-            shape.load("textFrame,table,hasTable");
-            await ctx.sync();
-            console.log("✅ Additional properties loaded successfully");
-            
-            // Log what we found
-            console.log(`📋 Has textFrame: ${!!shape.textFrame}`);
-            console.log(`📋 Has table property: ${!!shape.table}`);
-            console.log(`📋 Has hasTable property: ${!!(shape as any).hasTable}`);
-            
-          } catch (loadError) {
-            console.warn("⚠️ Error loading additional properties:", loadError);
-          }
-
-          // Try different approaches based on shape type
-          if (shape.type === "Table") {
-            console.log("🏗️ Detected table shape, attempting table extraction...");
-            try {
-              const tableText = await attemptTableExtraction(shape, ctx);
-              if (tableText) {
-                console.log("✅ Table extraction successful:", tableText);
-                return tableText;
-              }
-            } catch (tableError) {
-              console.error("❌ Table extraction failed:", tableError);
-            }
+          // Method 1: Try to use PowerPoint's clipboard
+          const clipboardText = await tryClipboardMethod();
+          if (clipboardText) {
+            return clipboardText;
           }
           
-          // Try text frame approach (original logic)
-          if (shape.textFrame) {
-            console.log("📝 Shape has textFrame, checking for text...");
-            try {
-              shape.textFrame.load("hasText,textRange");
-              await ctx.sync();
-              console.log(`📋 TextFrame hasText: ${shape.textFrame.hasText}`);
-              
-              if (shape.textFrame.hasText && shape.textFrame.textRange) {
-                shape.textFrame.textRange.load("text");
-                await ctx.sync();
-                const text = shape.textFrame.textRange.text?.trim();
-                console.log("📄 TextFrame content:", text);
-                if (text) {
-                  console.log("✅ Returning textFrame content:", text);
-                  return text;
-                }
-              }
-            } catch (textError) {
-              console.error("❌ TextFrame extraction failed:", textError);
-            }
+          // Method 2: Try OOXML manipulation
+          const ooxmlText = await tryOOXMLMethod(ctx);
+          if (ooxmlText) {
+            return ooxmlText;
           }
           
-          // Try alternative text extraction methods
-          console.log("🔄 Trying alternative text extraction methods...");
-          try {
-            // Method 1: Direct text property
-            shape.load("text");
-            await ctx.sync();
-            if ((shape as any).text) {
-              console.log("✅ Found direct text property:", (shape as any).text);
-              return (shape as any).text.trim();
-            }
-          } catch (e) {
-            console.log("❌ No direct text property available");
-          }
+          // Method 3: Prompt user to copy manually
+          return await promptUserToCopy();
         }
         
-        console.log("❌ No extractable text found in any selected shapes");
-      } else {
-        console.log("❌ No shapes selected");
+        // Handle regular text shapes
+        if (shape.type === "GeometricShape" || shape.type === "TextBox") {
+          try {
+            shape.load("textFrame");
+            await ctx.sync();
+            if (shape.textFrame) {
+              shape.textFrame.load("textRange");
+              await ctx.sync();
+              if (shape.textFrame.textRange) {
+                shape.textFrame.textRange.load("text");
+                await ctx.sync();
+                return shape.textFrame.textRange.text?.trim() || "";
+              }
+            }
+          } catch (e) {
+            console.log("Regular text extraction failed:", e);
+          }
+        }
       }
-
-      console.log("❌ No text found anywhere, returning empty string");
-      return "";
       
+      return "";
     } catch (error) {
-      console.error("💥 Fatal error in getPptSelectedTextOrShape:", error);
-      console.error("Error details:", {
-        name: error.name,
-        message: error.message,
-        stack: error.stack
-      });
-      throw error;
+      console.error("💥 Fatal error:", error);
+      return "";
     }
   });
 }
 
-async function attemptTableExtraction(shape: PowerPoint.Shape, ctx: PowerPoint.RequestContext): Promise<string> {
-  console.log("🏗️ Starting table extraction attempts...");
-  
-  // Method 1: Try Office.js table API (likely to fail)
+// Method 1: Try using clipboard (requires user permission)
+async function tryClipboardMethod(): Promise<string> {
+  console.log("🔄 Trying clipboard method...");
   try {
-    console.log("🔄 Method 1: Office.js table API");
-    if (shape.table) {
-      shape.table.load("rowCount,columnCount");
-      await ctx.sync();
-      console.log(`📊 Table dimensions: ${shape.table.rowCount} x ${shape.table.columnCount}`);
-      // Continue with table extraction...
-      return "Table found but extraction not yet implemented";
-    }
-  } catch (e) {
-    console.log("❌ Method 1 failed:", e.message);
-  }
-  
-  // Method 2: Try to access table through textFrame
-  try {
-    console.log("🔄 Method 2: Table via textFrame");
-    if (shape.textFrame) {
-      shape.textFrame.load("textRange");
-      await ctx.sync();
-      if (shape.textFrame.textRange) {
-        shape.textFrame.textRange.load("text");
-        await ctx.sync();
-        const text = shape.textFrame.textRange.text;
-        console.log("📄 Table textFrame content:", text);
-        return text?.trim() || "";
+    // Check if we can access clipboard
+    if (navigator.clipboard && navigator.clipboard.readText) {
+      // Instruct user to copy the table
+      const userConfirmed = confirm(
+        "To extract table content, please:\n1. Right-click on the selected table\n2. Choose 'Copy'\n3. Click OK"
+      );
+      
+      if (userConfirmed) {
+        const text = await navigator.clipboard.readText();
+        console.log("📋 Clipboard content:", text);
+        return text.trim();
       }
     }
   } catch (e) {
-    console.log("❌ Method 2 failed:", e.message);
+    console.log("❌ Clipboard method failed:", e);
   }
-  
-  // Method 3: Try PowerPoint-specific approaches
+  return "";
+}
+
+// Method 2: Try OOXML approach (experimental)
+async function tryOOXMLMethod(ctx: PowerPoint.RequestContext): Promise<string> {
+  console.log("🔄 Trying OOXML method...");
   try {
-    console.log("🔄 Method 3: PowerPoint-specific properties");
-    // Load any PowerPoint-specific properties
-    shape.load(); // Load all available properties
+    // Get slide content as OOXML
+    const slide = ctx.presentation.slides.getActiveSlide();
+    const ooxml = slide.getOoxml();
     await ctx.sync();
     
-    // Log all available properties
-    console.log("📋 All shape properties:", Object.keys(shape));
+    console.log("📄 OOXML content:", ooxml.value);
+    
+    // Parse OOXML for table content (basic parsing)
+    const tableText = parseTableFromOOXML(ooxml.value);
+    return tableText;
+  } catch (e) {
+    console.log("❌ OOXML method failed:", e);
+    return "";
+  }
+}
+
+// Basic OOXML table parser
+function parseTableFromOOXML(ooxml: string): string {
+  console.log("🔍 Parsing OOXML for table content...");
+  try {
+    // Look for table cells in OOXML
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(ooxml, 'text/xml');
+    
+    // Find table cells (a:tc elements)
+    const cells = doc.querySelectorAll('a\\:tc, tc');
+    let tableText = "";
+    let cellCount = 0;
+    
+    cells.forEach((cell, index) => {
+      // Extract text from cell
+      const textElements = cell.querySelectorAll('a\\:t, t');
+      let cellText = "";
+      
+      textElements.forEach(textEl => {
+        cellText += textEl.textContent || "";
+      });
+      
+      if (cellText.trim()) {
+        tableText += cellText.trim();
+        cellCount++;
+        
+        // Add separator (tab for columns, newline for rows - rough estimate)
+        if ((cellCount % 3 === 0)) { // Assuming 3 columns, adjust as needed
+          tableText += "\n";
+        } else {
+          tableText += "\t";
+        }
+      }
+    });
+    
+    console.log("📊 Extracted table text:", tableText);
+    return tableText.trim();
     
   } catch (e) {
-    console.log("❌ Method 3 failed:", e.message);
+    console.log("❌ OOXML parsing failed:", e);
+    return "";
   }
+}
+
+// Method 3: Prompt user to manually copy
+async function promptUserToCopy(): Promise<string> {
+  console.log("🔄 Prompting user to copy manually...");
   
-  console.log("❌ All table extraction methods failed");
-  return "";
+  return new Promise((resolve) => {
+    const modal = document.createElement('div');
+    modal.style.cssText = `
+      position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      background: white; padding: 20px; border: 2px solid #ccc; border-radius: 8px;
+      box-shadow: 0 4px 8px rgba(0,0,0,0.3); z-index: 10000; font-family: Arial;
+    `;
+    
+    modal.innerHTML = `
+      <h3>Table Content Extraction</h3>
+      <p>Office.js doesn't support table extraction in PowerPoint.</p>
+      <p>Please follow these steps:</p>
+      <ol>
+        <li>Right-click on the selected table</li>
+        <li>Choose "Copy" from the context menu</li>
+        <li>Paste the content in the text area below:</li>
+      </ol>
+      <textarea id="tableText" rows="6" cols="50" placeholder="Paste table content here..."></textarea><br><br>
+      <button id="confirmBtn">Use This Text</button>
+      <button id="cancelBtn" style="margin-left: 10px;">Cancel</button>
+    `;
+    
+    document.body.appendChild(modal);
+    
+    document.getElementById('confirmBtn')!.onclick = () => {
+      const text = (document.getElementById('tableText') as HTMLTextAreaElement).value;
+      document.body.removeChild(modal);
+      resolve(text.trim());
+    };
+    
+    document.getElementById('cancelBtn')!.onclick = () => {
+      document.body.removeChild(modal);
+      resolve("");
+    };
+  });
 }
