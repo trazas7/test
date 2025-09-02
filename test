@@ -1,18 +1,19 @@
-// ppt-table-extract-simple.ts
+// ppt-table-extract-name-aware.ts
 import JSZip from "jszip";
 
 /**
- * One function you call:
+ * Call this:
  *  - highlighted text → returns it
- *  - selected TextBox → returns text
- *  - selected Table → returns ONLY that table as TSV (or an "ambiguous" message)
+ *  - selected TextBox → returns its text
+ *  - selected Table → returns ONLY that table as TSV
+ * Uses geometry + table name as a tie-breaker.
  */
 export async function getPptSelectedTextOrShape(): Promise<string> {
   const t0 = performance.now();
-  log("🚀 start getPptSelectedTextOrShape");
+  log("🚀 start");
 
-  // 1) Try highlighted text
-  const text = await PowerPoint.run(async (ctx) => {
+  // 1) Try selected text / selected shapes (collect table geometry + name)
+  const tokenOrText = await PowerPoint.run(async (ctx) => {
     try {
       log("🔎 step1: highlighted text");
       const sel = ctx.presentation.getSelectedTextRangeOrNullObject();
@@ -27,23 +28,19 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
         log("ℹ️ no selected text range");
       }
 
-      // 2) Check selected shapes (TextBox or Table)
       log("🔎 step2: inspect selected shapes");
-      const selShapes = ctx.presentation.getSelectedShapes();
-      selShapes.load("items");
+      const ss = ctx.presentation.getSelectedShapes();
+      ss.load("items");
       await ctx.sync();
-      log("📦 selected shapes count:", selShapes.items.length);
+      log("📦 selected shapes:", ss.items.length);
+      if (ss.items.length === 0) return "";
 
-      if (selShapes.items.length === 0) return "";
-
-      // Load only safe props for all shapes first
-      selShapes.items.forEach((s) =>
-        s.load("type,name,left,top,width,height")
-      );
+      // Load safe props first; read TextBox text lazily
+      ss.items.forEach((s) => s.load("type,name,left,top,width,height"));
       await ctx.sync();
 
-      // Look for TextBox first (quick win)
-      for (const s of selShapes.items as any[]) {
+      // If there's a TextBox, return its text
+      for (const s of ss.items as any[]) {
         logShapeMeta(s);
         if (s.type === "TextBox") {
           try {
@@ -58,21 +55,18 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
         }
       }
 
-      // If a Table is selected, return a token to continue outside PowerPoint.run
-      for (const s of selShapes.items as any[]) {
+      // If we have a Table, store its geometry + name in window and emit a token
+      for (const s of ss.items as any[]) {
         if (s.type === "Table") {
-          const shape: SelectedShape = {
-            kind: "table",
-            pts: {
-              left: toNumber(s.left),
-              top: toNumber(s.top),
-              width: toNumber(s.width),
-              height: toNumber(s.height),
-            },
+          const payload: SelectedTable = {
+            leftPt: num(s.left),
+            topPt: num(s.top),
+            widthPt: num(s.width),
+            heightPt: num(s.height),
+            name: (s.name ?? "").toString(),
           };
-          // serialize as JSON so we can pass it out of the run batch
-          (window as any).__ppt_lastSelectedTableGeom = shape;
-          log("📊 table selected; geom pts:", shape.pts);
+          (window as any).__ppt_selected_table = payload;
+          log("📊 table selected:", payload);
           return "__TABLE_SELECTED__";
         }
       }
@@ -85,115 +79,126 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
     }
   });
 
-  if (text && text !== "__TABLE_SELECTED__") {
+  if (tokenOrText && tokenOrText !== "__TABLE_SELECTED__") {
     logDone(t0, "✅ returning highlighted/textbox text");
-    return text;
+    return tokenOrText;
   }
 
-  // 3) If we flagged a table, continue with ZIP-parsing and geometric match.
-  const selected: SelectedShape | undefined = (window as any)
-    .__ppt_lastSelectedTableGeom;
-  if (!selected || selected.kind !== "table") {
+  const selected: SelectedTable | undefined = (window as any).__ppt_selected_table;
+  if (!selected) {
     log("⛔ no selected table; not parsing deck");
     return "Select a single table, then try again.";
   }
 
-  // Build our target in EMU (slide XML uses EMU)
-  const targetEMU = ptGeomToEmu(selected.pts);
-  log("📐 target geom (EMU):", targetEMU);
+  // 2) Parse the deck and find the best match (geometry + name)
+  const targetEMU = ptGeomToEmu(selected);
+  log("📐 target geom (EMU):", targetEMU, "name:", JSON.stringify(selected.name));
 
-  // Pull the deck as ZIP
-  const zipArrayBuffer = await getPptxZipArrayBuffer();
-
-  // Extract ALL tables (name + geometry + TSV) from ALL slides
-  const { tables, slidesCount } = await extractAllTables(zipArrayBuffer);
-  log(`📄 slides parsed: ${slidesCount}, total tables found: ${tables.length}`);
+  const zipBuf = await getPptxZipArrayBuffer();
+  const { tables, slidesCount } = await extractAllTables(zipBuf);
+  log(`📄 slides parsed: ${slidesCount}, total tables: ${tables.length}`);
 
   if (tables.length === 0) {
-    logDone(t0, "❌ no tables in deck");
+    logDone(t0, "❌ no tables found");
     return "No tables found in the presentation.";
   }
 
-  // Score geometric similarity and pick the best
-  const ranked = rankByGeometry(targetEMU, tables);
+  const ranked = rankCandidates(targetEMU, selected.name, tables);
 
-  // Show top 5 candidates with their scores for debugging
-  log("🏁 top candidates (lowest score = best):");
+  log("🏁 top candidates (lower = better):");
   ranked.slice(0, 5).forEach((c, i) =>
     log(
-      `   ${i + 1}. score=${fmt(c.score)} slide=${c.slideNo} name=${JSON.stringify(
-        c.name
-      )} geom=${emuStr(c.geom)}`
+      `  ${i + 1}. final=${fmt(c.final)} geom=${fmt(c.geomScore)} penalty=${fmt(
+        c.namePenalty
+      )} slide=${c.slideNo} name=${JSON.stringify(c.name)} geom=${emuStr(c.geom)}`
     )
   );
 
-  // Decision: if top score is good and clearly better than #2 → pick it
   const BEST = ranked[0];
   const SECOND = ranked[1];
-  const ACCEPTABLE = BEST.score <= MAX_ACCEPTABLE_SCORE;
-  const CLEAR_MARGIN =
-    !SECOND || BEST.score + CLEAR_MARGIN_DELTA < SECOND.score;
+
+  // decide
+  const ACCEPTABLE = BEST.final <= MAX_ACCEPTABLE_FINAL;
+  const CLEAR_MARGIN = !SECOND || BEST.final + CLEAR_MARGIN_DELTA < SECOND.final;
 
   if (ACCEPTABLE && CLEAR_MARGIN) {
-    log("✅ confident match → slide", BEST.slideNo, "name", BEST.name);
+    log(
+      "✅ confident match: slide",
+      BEST.slideNo,
+      "name",
+      BEST.name,
+      "final",
+      fmt(BEST.final)
+    );
     logDone(t0, "✅ returning selected table TSV");
     return BEST.tsv;
   }
 
-  // If ambiguous, don’t return wrong data — tell the user & show debug details
-  log(
-    "⚠️ ambiguous match; BEST=",
-    fmt(BEST.score),
-    "SECOND=",
-    SECOND ? fmt(SECOND.score) : "n/a"
-  );
+  // If still ambiguous, surface helpful debug
   const diag = ranked
     .slice(0, 5)
     .map(
       (c, i) =>
-        `${i + 1}. score=${fmt(c.score)} slide=${c.slideNo} name=${
-          c.name
-        } geom=${emuStr(c.geom)}`
+        `${i + 1}. final=${fmt(c.final)} (geom=${fmt(c.geomScore)}, penalty=${fmt(
+          c.namePenalty
+        )}) slide=${c.slideNo} name=${c.name} geom=${emuStr(c.geom)}`
     )
     .join("\n");
+
   return [
     "Ambiguous selection: multiple tables look similar.",
-    "Try any of:",
-    "  • Move the table slightly (position will change).",
-    "  • Resize the table a bit (size will change).",
-    "  • Delete/rename duplicate tables.",
+    "Tips:",
+    "  • Move or resize the table a bit, then try again.",
+    "  • Rename the table to a unique name (we use names as a tie-breaker).",
     "",
     "Debug (top candidates):",
     diag,
   ].join("\n");
 }
 
-/* ======================================================================================
-   CONFIG / SCORING
-   ==================================================================================== */
+/* =============================== config & scoring =============================== */
 
-/** How strict we are. Lower = stricter. Typical good match is ~0.01–0.05 */
-const MAX_ACCEPTABLE_SCORE = 0.08;
-/** How much better BEST must be than SECOND to be “clearly” the match. */
-const CLEAR_MARGIN_DELTA = 0.02;
+// Pure-geometry score (0 = perfect) from 0–~0.3 typical.
+// We add a penalty if names don't match to push the right one to the top.
+const NAME_MISMATCH_PENALTY = 0.05;   // tweak: bigger = stronger preference for same name
+const MAX_ACCEPTABLE_FINAL = 0.10;    // accept only if final score <= this
+const CLEAR_MARGIN_DELTA   = 0.02;    // best must beat #2 by this delta
 
-/** geometric score: lower is better; 0 = perfect */
 function scoreGeom(a: GeomEMU, b: GeomEMU): number {
-  // Normalize deltas by candidate size to be scale-invariant
+  // Normalize deltas by candidate size for scale invariance
   const dx = Math.abs(a.x - b.x) / (b.cx || 1);
   const dy = Math.abs(a.y - b.y) / (b.cy || 1);
   const dw = Math.abs(a.cx - b.cx) / (b.cx || 1);
   const dh = Math.abs(a.cy - b.cy) / (b.cy || 1);
-  // weight position half of size (tweakable)
-  return dx * 0.25 + dy * 0.25 + dw * 0.25 + dh * 0.25;
+  // equal weights
+  return (dx + dy + dw + dh) / 4;
 }
 
-/* ======================================================================================
-   TYPES
-   ==================================================================================== */
-type SelectedShape = {
-  kind: "table";
-  pts: { left: number; top: number; width: number; height: number };
+function rankCandidates(
+  target: GeomEMU,
+  selectedName: string,
+  tables: ExtractedTable[]
+) {
+  const selNorm = normalizeName(selectedName);
+  return tables
+    .map((t) => {
+      const geomScore = scoreGeom(target, t.geom);
+      const namePenalty =
+        selNorm && normalizeName(t.name) === selNorm ? 0 : NAME_MISMATCH_PENALTY;
+      const final = geomScore + namePenalty;
+      return { ...t, geomScore, namePenalty, final };
+    })
+    .sort((a, b) => a.final - b.final);
+}
+
+/* ================================ types ================================= */
+
+type SelectedTable = {
+  leftPt: number;
+  topPt: number;
+  widthPt: number;
+  heightPt: number;
+  name: string; // may be non-unique; used only as tie-breaker
 };
 
 type GeomEMU = { x: number; y: number; cx: number; cy: number };
@@ -205,9 +210,7 @@ type ExtractedTable = {
   tsv: string;
 };
 
-/* ======================================================================================
-   ZIP + EXTRACT ALL TABLES
-   ==================================================================================== */
+/* ============================== extract tables ============================== */
 
 async function extractAllTables(
   zip: ArrayBuffer
@@ -228,7 +231,7 @@ async function extractAllTables(
     const slideNo = parseInt(path.match(/slide(\d+)\.xml/)![1], 10);
     const xml = await z.files[path].async("text");
     const tables = extractTablesOnSlide(xml, slideNo);
-    log(`   🧩 slide${slideNo}: found ${tables.length} table(s)`);
+    log(`   🧩 slide${slideNo}: ${tables.length} table(s)`);
     all.push(...tables);
   }
   return { tables: all, slidesCount: slidePaths.length };
@@ -240,62 +243,38 @@ function extractTablesOnSlide(xml: string, slideNo: number): ExtractedTable[] {
   const out: ExtractedTable[] = [];
 
   for (const gf of frames) {
-    const graphic = first(gf, "graphic");
-    const graphicData = graphic ? first(graphic, "graphicData") : null;
-    const tbl = graphicData ? first(graphicData, "tbl") : null;
+    const g = first(gf, "graphic");
+    const gd = g ? first(g, "graphicData") : null;
+    const tbl = gd ? first(gd, "tbl") : null;
     if (!tbl) continue;
 
-    // name (optional, may be non-unique)
     const nv = first(gf, "nvGraphicFramePr");
     const cNvPr = nv ? first(nv, "cNvPr") : null;
     const name = (cNvPr?.getAttribute("name") ?? "").trim();
 
-    // geometry (EMU)
     const xfrm = first(gf, "xfrm");
     const off = xfrm ? first(xfrm, "off") : null;
     const ext = xfrm ? first(xfrm, "ext") : null;
     if (!off || !ext) continue;
 
     const geom: GeomEMU = {
-      x: toNumber(off.getAttribute("x")),
-      y: toNumber(off.getAttribute("y")),
-      cx: toNumber(ext.getAttribute("cx")),
-      cy: toNumber(ext.getAttribute("cy")),
+      x: num(off.getAttribute("x")),
+      y: num(off.getAttribute("y")),
+      cx: num(ext.getAttribute("cx")),
+      cy: num(ext.getAttribute("cy")),
     };
 
-    out.push({
-      slideNo,
-      name,
-      geom,
-      tsv: tableToTSV(tbl),
-    });
+    out.push({ slideNo, name, geom, tsv: tableToTSV(tbl) });
   }
-
   return out;
 }
 
-/* ======================================================================================
-   MATCHING
-   ==================================================================================== */
-function rankByGeometry(target: GeomEMU, tables: ExtractedTable[]) {
-  return tables
-    .map((t) => ({
-      ...t,
-      score: scoreGeom(target, t.geom),
-    }))
-    .sort((a, b) => a.score - b.score);
-}
-
-/* ======================================================================================
-   TABLE → TSV
-   ==================================================================================== */
+/* =============================== TSV helpers =============================== */
 
 function tableToTSV(tblEl: Element): string {
   const rows = Array.from(tblEl.getElementsByTagNameNS("*", "tr"));
   const lines: string[] = [];
-
-  for (let r = 0; r < rows.length; r++) {
-    const tr = rows[r];
+  for (const tr of rows) {
     const cells = Array.from(tr.getElementsByTagNameNS("*", "tc"));
     const vals = cells.map((tc) => getCellText(tc));
     // trim trailing empty cells
@@ -326,9 +305,7 @@ function getCellText(tc: Element): string {
   return out.replace(/\s+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
-/* ======================================================================================
-   OFFICE FILE ACCESS
-   ==================================================================================== */
+/* ============================ Office file access ============================ */
 
 async function getPptxZipArrayBuffer(): Promise<ArrayBuffer> {
   log("⬇️ getFileAsync(Compressed) …");
@@ -383,22 +360,18 @@ function getSliceAsync(file: Office.File, index: number) {
   });
 }
 
-/* ======================================================================================
-   UTILS
-   ==================================================================================== */
+/* ================================= utils ================================= */
 
-function ptGeomToEmu(pts: { left: number; top: number; width: number; height: number }): GeomEMU {
-  return {
-    x: ptToEmu(pts.left),
-    y: ptToEmu(pts.top),
-    cx: ptToEmu(pts.width),
-    cy: ptToEmu(pts.height),
-  };
-}
+type GeomPts = { leftPt: number; topPt: number; widthPt: number; heightPt: number };
 
 const EMU_PER_PT = 12700;
-function ptToEmu(pt: number): number {
-  return Math.round(pt * EMU_PER_PT);
+function ptGeomToEmu(g: GeomPts): GeomEMU {
+  return {
+    x: Math.round(g.leftPt * EMU_PER_PT),
+    y: Math.round(g.topPt * EMU_PER_PT),
+    cx: Math.round(g.widthPt * EMU_PER_PT),
+    cy: Math.round(g.heightPt * EMU_PER_PT),
+  };
 }
 
 function first(parent: Element, local: string): Element | null {
@@ -411,7 +384,11 @@ function first(parent: Element, local: string): Element | null {
   return null;
 }
 
-function toNumber(v: any): number {
+function normalizeName(n: string) {
+  return (n ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function num(v: any): number {
   const n = typeof v === "number" ? v : parseFloat(String(v ?? "0"));
   return Number.isFinite(n) ? n : 0;
 }
@@ -423,12 +400,13 @@ function emuStr(g: GeomEMU) {
   return `{x:${g.x},y:${g.y},cx:${g.cx},cy:${g.cy}}`;
 }
 function log(...a: any[]) {
-  // centralized logger for easy filtering
   console.log("[ppt-table-extract]", ...a);
 }
 function logShapeMeta(s: any) {
   log(
-    `• shape type=${s.type} name=${JSON.stringify(s.name)} box=[${s.left},${s.top},${s.width},${s.height}]`
+    `• shape type=${s.type} name=${JSON.stringify(
+      s.name
+    )} box=[${s.left},${s.top},${s.width},${s.height}]`
   );
 }
 function logDone(t0: number, msg: string) {
