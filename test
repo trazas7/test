@@ -1,37 +1,414 @@
-console.log("🔎 step 2: inspect selected shapes");
-const shapes = ctx.presentation.getSelectedShapes();
-shapes.load("items");
-await ctx.sync();
-console.log("📦 selected shapes:", shapes.items.length);
+// table-extract-geo.ts
+import JSZip from "jszip";
 
-if (shapes.items.length > 0) {
-  // First load type + name (safe for all shapes)
-  shapes.items.forEach((s) => s.load("type,name"));
-  await ctx.sync();
+/**
+ * Main entry:
+ *  - highlighted text → return text
+ *  - selected textbox → return text
+ *  - selected table → return ONLY that table as TSV
+ * Matching is by (name + geometry) to avoid mismatches.
+ */
+export async function getPptSelectedTextOrShape(): Promise<string> {
+  const t0 = performance.now();
+  console.log("🚀 [getPptSelectedTextOrShape] start");
 
-  for (const s of shapes.items as any[]) {
-    console.log(`• shape name=${s.name} type=${s.type}`);
+  // what we'll use to identify the table reliably
+  let selectedTableName: string | null = null;
+  let selectedGeom: ShapeGeom | null = null; // pt units from Office.js
+  let activeSlideIndex: number | null = null; // may be unavailable
 
-    if (s.type === "TextBox") {
-      try {
-        // only for TextBoxes: load textFrame
-        s.load("textFrame/textRange/text");
+  const immediateText = await PowerPoint.run(async (ctx) => {
+    try {
+      // 1) highlighted text
+      console.log("🔎 step 1: try highlighted text");
+      const sel = ctx.presentation.getSelectedTextRangeOrNullObject();
+      await ctx.sync();
+      if (!sel.isNullObject) {
+        sel.load("text");
         await ctx.sync();
-        const txt = s?.textFrame?.textRange?.text?.trim?.();
-        if (txt) {
-          console.log("📝 returning textbox text");
-          return txt;
-        }
-      } catch (e) {
-        console.log("⚠️ failed to read textbox text:", e);
+        const t = (sel.text ?? "").trim();
+        console.log("🖱️ selected text:", JSON.stringify(t));
+        if (t) return t;
+      } else {
+        console.log("ℹ️ no selected text range");
       }
-    }
 
-    if (s.type === "Table" && !selectedTableName) {
-      selectedTableName = s.name ?? null;
-      console.log("📊 table selected; name:", selectedTableName);
+      // 2) selected shapes
+      console.log("🔎 step 2: inspect selected shapes");
+      const shapes = ctx.presentation.getSelectedShapes();
+      shapes.load("items");
+      await ctx.sync();
+      console.log("📦 selected shapes:", shapes.items.length);
+
+      if (shapes.items.length > 0) {
+        // First pass: only safe props for all shapes
+        shapes.items.forEach((s) => s.load("type,name,left,top,width,height"));
+        await ctx.sync();
+
+        for (const s of shapes.items as any[]) {
+          console.log(
+            `• shape name=${s.name} type=${s.type} box=[${s.left},${s.top},${s.width},${s.height}]`
+          );
+
+          if (s.type === "TextBox") {
+            try {
+              // lazily load text for textbox only
+              s.load("textFrame/textRange/text");
+              await ctx.sync();
+              const txt = s?.textFrame?.textRange?.text?.trim?.();
+              if (txt) {
+                console.log("📝 returning textbox text");
+                return txt;
+              }
+            } catch (e) {
+              console.log("⚠️ failed to read textbox text:", e);
+            }
+          }
+
+          if (s.type === "Table" && !selectedTableName) {
+            selectedTableName = s.name ?? null;
+            selectedGeom = {
+              leftPt: toNumber(s.left),
+              topPt: toNumber(s.top),
+              widthPt: toNumber(s.width),
+              heightPt: toNumber(s.height),
+            };
+            console.log("📊 table selected;", { selectedTableName, selectedGeom });
+          }
+        }
+      } else {
+        console.log("ℹ️ no shapes selected");
+      }
+
+      // 3) try active slide index (feature-detect; not on all hosts)
+      const hasGetActiveSlide =
+        (ctx.presentation as any).slides &&
+        typeof (ctx.presentation as any).slides.getActiveSlide === "function";
+      if (hasGetActiveSlide) {
+        try {
+          const slide = (ctx.presentation as any).slides.getActiveSlide();
+          slide.load("index");
+          await ctx.sync();
+          activeSlideIndex = (slide as any).index ?? null;
+          console.log("📍 active slide index:", activeSlideIndex);
+        } catch (e) {
+          console.log("⚠️ could not read active slide index:", e);
+        }
+      } else {
+        console.log("ℹ️ getActiveSlide not available; will scan by name+geometry");
+      }
+
+      return "";
+    } catch (err) {
+      console.error("💥 error during selection scan:", err);
+      return "";
+    }
+  });
+
+  if (immediateText?.trim()) {
+    console.log(`✅ plain text path in ${Math.round(performance.now() - t0)} ms`);
+    return immediateText.trim();
+  }
+
+  if (!selectedTableName || !selectedGeom) {
+    console.log("⛔ no selected table info; not parsing entire deck");
+    return "Select a single table, then try again.";
+  }
+
+  console.log(
+    "🧭 going to ZIP parse with filters:",
+    JSON.stringify({ activeSlideIndex, selectedTableName, selectedGeom })
+  );
+
+  const tsv = await readSelectedTableByNameAndGeometryTSV({
+    selectedTableName,
+    selectedGeom,
+    preferSlideIndex: activeSlideIndex ?? null,
+  });
+
+  if (tsv.trim()) {
+    console.log(
+      `✅ returning selected table TSV in ${Math.round(performance.now() - t0)} ms`
+    );
+    return tsv;
+  }
+
+  console.log("❌ could not locate the selected table by name+geometry");
+  return "Couldn’t locate the selected table in the slide XML.";
+}
+
+/* ========================== Geometry-aware targeted parsing ========================== */
+
+type ShapeGeom = {
+  leftPt: number;
+  topPt: number;
+  widthPt: number;
+  heightPt: number;
+};
+
+type ReadByNameGeoOpts = {
+  selectedTableName: string;
+  selectedGeom: ShapeGeom;          // in POINTS (Office.js units)
+  preferSlideIndex?: number | null; // optional 1-based
+};
+
+async function readSelectedTableByNameAndGeometryTSV(
+  opts: ReadByNameGeoOpts
+): Promise<string> {
+  const { selectedTableName, selectedGeom, preferSlideIndex = null } = opts;
+  console.log("🔧 [readSelectedTableByNameAndGeometryTSV] opts:", opts);
+
+  const candidates = buildNameCandidates(selectedTableName);
+  console.log("🪪 name candidates:", candidates);
+
+  console.log("⬇️ fetching PPTX ZIP");
+  const zipBuffer = await getPptxZipArrayBuffer();
+  console.log("✅ ZIP bytes:", (zipBuffer.byteLength / 1024).toFixed(1), "KB");
+
+  const zip = await JSZip.loadAsync(zipBuffer);
+  const slidePaths = Object.keys(zip.files)
+    .filter((p) => /^ppt\/slides\/slide\d+\.xml$/.test(p))
+    .sort((a, b) => {
+      const na = parseInt(a.match(/slide(\d+)\.xml/)![1], 10);
+      const nb = parseInt(b.match(/slide(\d+)\.xml/)![1], 10);
+      return na - nb;
+    });
+  console.log("📄 slide XMLs:", slidePaths.length);
+
+  let ordered = slidePaths.slice();
+  if (preferSlideIndex) {
+    const preferred = `ppt/slides/slide${preferSlideIndex}.xml`;
+    ordered = [preferred, ...slidePaths.filter((p) => p !== preferred)];
+    console.log("🎯 prioritizing", preferred);
+  }
+
+  const targetEMU = geomPtToEmu(selectedGeom);
+  console.log("📐 target geom (EMU):", targetEMU);
+
+  for (const path of ordered) {
+    console.log("🧩 scanning", path);
+    const xmlText = await zip.files[path].async("text");
+    const tsv = findTableTSVByNameAndGeometryOnSlide(xmlText, candidates, targetEMU);
+    if (tsv) {
+      console.log("✅ geometry+name match on", path, "→ returning TSV");
+      return tsv;
+    }
+    console.log("… no match on", path);
+  }
+
+  console.log("❌ no slide contained a matching table by name+geometry");
+  return "";
+}
+
+/* -------------------------------- XML helpers -------------------------------- */
+
+function findTableTSVByNameAndGeometryOnSlide(
+  xml: string,
+  nameCandidates: string[],
+  target: GeomEmu,
+  // tolerance: allow small rounding/layout differences (approx ±2pt)
+  tolEmu: number = ptToEmu(2)
+): string {
+  console.log("🔬 parse slide XML (len:", xml.length, ")");
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+
+  // Each table is typically inside p:graphicFrame → a:graphic → a:graphicData → a:tbl
+  const frames = Array.from(doc.getElementsByTagNameNS("*", "graphicFrame"));
+  console.log("🔎 graphicFrame count:", frames.length);
+
+  type Candidate = { score: number; tsv: string; name: string; geom: GeomEmu };
+  const hits: Candidate[] = [];
+
+  for (const gf of frames) {
+    const nv = firstChildByLocalName(gf, "nvGraphicFramePr");
+    const cNvPr = nv ? firstChildByLocalName(nv, "cNvPr") : null;
+    const nameAttr = cNvPr?.getAttribute("name") ?? "";
+
+    const xfrm = firstChildByLocalName(gf, "xfrm");
+    const off = xfrm ? firstChildByLocalName(xfrm, "off") : null;
+    const ext = xfrm ? firstChildByLocalName(xfrm, "ext") : null;
+
+    const geom: GeomEmu | null =
+      off && ext
+        ? {
+            x: toNumber(off.getAttribute("x")),
+            y: toNumber(off.getAttribute("y")),
+            cx: toNumber(ext.getAttribute("cx")),
+            cy: toNumber(ext.getAttribute("cy")),
+          }
+        : null;
+
+    const graphic = firstChildByLocalName(gf, "graphic");
+    const graphicData = graphic ? firstChildByLocalName(graphic, "graphicData") : null;
+    const tbl = graphicData ? firstChildByLocalName(graphicData, "tbl") : null;
+
+    if (!tbl || !geom) continue;
+
+    const nameOk =
+      nameAttr &&
+      nameCandidates.some((c) => normalizeName(nameAttr) === normalizeName(c));
+
+    const geomOk = roughlyEqualGeom(geom, target, tolEmu);
+
+    if (nameOk || geomOk) {
+      // combine scores to pick the best
+      const score = (nameOk ? 10 : 0) + (geomOk ? 5 : 0);
+      const tsv = tableElementToTSV(tbl, 0);
+      hits.push({ score, tsv, name: nameAttr, geom });
+      console.log(
+        `   • candidate frame name=${JSON.stringify(nameAttr)} score=${score} geom=`,
+        geom
+      );
     }
   }
-} else {
-  console.log("ℹ️ no shapes selected");
+
+  if (!hits.length) return "";
+
+  // pick the best-scoring candidate (prefer name+geom > name-only > geom-only)
+  hits.sort((a, b) => b.score - a.score);
+  const best = hits[0];
+  console.log("🏆 chosen candidate:", { name: best.name, geom: best.geom, score: best.score });
+  return best.tsv;
+}
+
+function firstChildByLocalName(parent: Element, local: string): Element | null {
+  for (let i = 0; i < parent.childNodes.length; i++) {
+    const n = parent.childNodes[i];
+    if (n.nodeType === Node.ELEMENT_NODE && (n as Element).localName === local) {
+      return n as Element;
+    }
+  }
+  return null;
+}
+
+function tableElementToTSV(tblEl: Element, tblIndex: number): string {
+  const rows = Array.from(tblEl.getElementsByTagNameNS("*", "tr"));
+  console.log(`🧱 table#${tblIndex} rows:`, rows.length);
+
+  const lines: string[] = [];
+  for (let r = 0; r < rows.length; r++) {
+    const tr = rows[r];
+    const cells = Array.from(tr.getElementsByTagNameNS("*", "tc"));
+    const vals = cells.map((tc, c) => {
+      const t = getTextFromCell(tc);
+      console.log(`   • r${r}c${c} text=`, JSON.stringify(t));
+      return t;
+    });
+
+    let end = vals.length;
+    while (end > 0 && (!vals[end - 1] || !vals[end - 1].trim())) end--;
+    lines.push(vals.slice(0, end).join("\t"));
+  }
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+
+  const tsv = lines.join("\n");
+  console.log(`🧾 table#${tblIndex} TSV length:`, tsv.length);
+  return tsv;
+}
+
+function getTextFromCell(tc: Element): string {
+  const doc = tc.ownerDocument!;
+  const walker = doc.createTreeWalker(
+    tc,
+    NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT
+  );
+
+  let n: Node | null = walker.nextNode();
+  let out = "";
+  while (n) {
+    if (n.nodeType === Node.ELEMENT_NODE) {
+      const el = n as Element;
+      if (el.localName === "t") out += el.textContent ?? "";
+      else if (el.localName === "br") out += "\n";
+    }
+    n = walker.nextNode();
+  }
+  return out.replace(/\s+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+/* -------------------------------- Units / geometry -------------------------------- */
+
+type GeomEmu = { x: number; y: number; cx: number; cy: number };
+
+function toNumber(v: any): number {
+  const n = typeof v === "number" ? v : parseFloat(v ?? "0");
+  return Number.isFinite(n) ? n : 0;
+}
+
+// Office.js PowerPoint geometry is in **points**; slide XML uses **EMU**
+const EMU_PER_PT = 12700;
+
+function ptToEmu(pt: number): number {
+  return Math.round(pt * EMU_PER_PT);
+}
+
+function geomPtToEmu(g: ShapeGeom): GeomEmu {
+  return {
+    x: ptToEmu(g.leftPt),
+    y: ptToEmu(g.topPt),
+    cx: ptToEmu(g.widthPt),
+    cy: ptToEmu(g.heightPt),
+  };
+}
+
+function roughlyEqualGeom(a: GeomEmu, b: GeomEmu, tol: number): boolean {
+  return (
+    Math.abs(a.x - b.x) <= tol &&
+    Math.abs(a.y - b.y) <= tol &&
+    Math.abs(a.cx - b.cx) <= tol &&
+    Math.abs(a.cy - b.cy) <= tol
+  );
+}
+
+/* ================================ ZIP helpers ================================= */
+
+async function getPptxZipArrayBuffer(): Promise<ArrayBuffer> {
+  const file = await getFileAsync(Office.FileType.Compressed);
+  console.log("📦 file acquired; slices:", file.sliceCount);
+  try {
+    const chunks: Uint8Array[] = [];
+    for (let i = 0; i < file.sliceCount; i++) {
+      const slice = await getSliceAsync(file, i);
+      const u8 = new Uint8Array(slice.value.data as number[]);
+      chunks.push(u8);
+      if (i === 0 || i === file.sliceCount - 1 || (i + 1) % 10 === 0) {
+        console.log(`   🔹 slice ${i + 1}/${file.sliceCount} (${u8.length} B)`);
+      }
+    }
+    const total = chunks.reduce((s, u) => s + u.length, 0);
+    console.log("📏 total bytes:", total);
+    const merged = new Uint8Array(total);
+    let off = 0;
+    for (const u of chunks) {
+      merged.set(u, off);
+      off += u.length;
+    }
+    return merged.buffer;
+  } finally {
+    file.closeAsync(() => console.log("🧹 file closed"));
+  }
+}
+
+function getFileAsync(type: Office.FileType): Promise<Office.File> {
+  return new Promise((resolve, reject) => {
+    Office.context.document.getFileAsync(type, (res) => {
+      if (res.status === Office.AsyncResultStatus.Succeeded) resolve(res.value);
+      else {
+        console.error("❌ getFileAsync failed:", res.error);
+        reject(res.error);
+      }
+    });
+  });
+}
+
+function getSliceAsync(file: Office.File, index: number) {
+  return new Promise<Office.AsyncResult<Office.Slice>>((resolve, reject) => {
+    file.getSliceAsync(index, (res) => {
+      if (res.status === Office.AsyncResultStatus.Succeeded) resolve(res);
+      else {
+        console.error(`❌ getSliceAsync(${index}) failed:`, res.error);
+        reject(res.error);
+      }
+    });
+  });
 }
