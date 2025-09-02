@@ -1,210 +1,121 @@
-// Requires JSZip in your task pane bundle
-import JSZip from "jszip";
-
-/**
- * Get the current PowerPoint selection as plain text.
- * - If a text selection exists, returns that.
- * - Else, gathers text from selected shapes.
- * - Tables are supported (Table API if available, else OOXML parsing).
- */
-export async function getPptSelectedText(): Promise<string> {
-  let result = "";
-
-  await PowerPoint.run(async (ctx) => {
-    const pres = ctx.presentation;
-
-    // 1) If there's a text selection, use it.
-    if (Office.context.requirements.isSetSupported("PowerPointApi", "1.5")) {
-      const sel = pres.getSelectedTextRangeOrNullObject();
-      sel.load(["text", "isNullObject"]);
+export async function getPptSelectedTextOrShape(): Promise<string> {
+  return PowerPoint.run(async (ctx) => {
+    // 1) Try highlighted text first
+    const sel = ctx.presentation.getSelectedTextRangeOrNullObject();
+    await ctx.sync();
+    
+    if (!sel.isNullObject) {
+      sel.load("text");
       await ctx.sync();
-      if (!sel.isNullObject && sel.text && sel.text.trim()) {
-        result = sel.text.trim();
-        return;
-      }
+      return (sel.text ?? "").trim();
     }
 
-    // 2) Otherwise, look at selected shapes on the first selected slide.
-    const selectedSlides = pres.getSelectedSlides();
-    const selectedShapes = pres.getSelectedShapes();
-    const firstSlide = selectedSlides.getItemAt(0);
-
-    firstSlide.load("id");
-    selectedShapes.load("items");
+    // 2) Fallback: check if a shape (including table) is selected
+    const shapes = ctx.presentation.getSelectedShapes();
+    shapes.load("items");
     await ctx.sync();
 
-    if (!selectedShapes.items.length) {
-      result = "";
-      return;
-    }
+    if (shapes.items.length) {
+      for (const shape of shapes.items) {
+        // Load shape properties to determine type
+        shape.load("type,table");
+        await ctx.sync();
 
-    // Try to read text directly from text frames first.
-    for (const s of selectedShapes.items) s.textFrame.load("hasText");
-    await ctx.sync();
-
-    const textShapes = selectedShapes.items.filter(s => s.textFrame.hasText);
-    for (const s of textShapes) s.textFrame.textRange.load("text");
-    await ctx.sync();
-
-    const textFromTextFrames = textShapes
-      .map(s => (s.textFrame.textRange.text || "").trim())
-      .filter(Boolean)
-      .join("\n");
-
-    // Collect shapes that didn't yield text — these might be tables.
-    const candidateTableShapes = selectedShapes.items
-      .filter(s => !s.textFrame.hasText);
-
-    let textFromTables = "";
-
-    // 3) Tables via Table API (if available).
-    if (Office.context.requirements.isSetSupported("PowerPointApi", "1.8")) {
-      const tableTexts: string[] = [];
-      for (const s of candidateTableShapes) {
-        // getTable() exists only on table shapes; guard & try/catch
-        try {
-          const tbl = (s as any).getTable?.();
-          if (!tbl) continue;
-          tbl.load("values,rowCount,columnCount");
-          await ctx.sync();
-          if (tbl.values && tbl.values.length) {
-            tableTexts.push(
-              tbl.values.map((row: string[]) => row.join("\t")).join("\n")
-            );
-          }
-        } catch { /* not a table, ignore */ }
-      }
-      textFromTables = tableTexts.filter(Boolean).join("\n");
-    }
-
-    // 4) If we still have no table text and there are shapes left,
-    //    read tables from OOXML (works on all builds).
-    if (!textFromTables && candidateTableShapes.length) {
-      // We need slide id + the candidate shape ids
-      for (const s of candidateTableShapes) s.load("id");
-      await ctx.sync();
-      const slideId = firstSlide.id as string;
-      const shapeIds = candidateTableShapes.map(s => String(s.id));
-
-      const zipBlob = await getPptxZipBlob();
-      if (zipBlob) {
-        const fromXml = await getTablesTextFromXml(zipBlob, slideId, shapeIds);
-        textFromTables = fromXml;
-      }
-    }
-
-    result = [textFromTextFrames, textFromTables].filter(Boolean).join("\n").trim();
-  });
-
-  return result;
-}
-
-/* ---------------- helpers ---------------- */
-
-function getPptxZipBlob(): Promise<Blob | null> {
-  return new Promise((resolve) => {
-    Office.context.document.getFileAsync(
-      Office.FileType.Compressed,
-      { sliceSize: 4_000_000 },
-      (res) => {
-        if (res.status !== Office.AsyncResultStatus.Succeeded) return resolve(null);
-        const file = res.value;
-        const chunks: Uint8Array[] = [];
-        let i = 0;
-        const read = () =>
-          file.getSliceAsync(i, (r) => {
-            if (r.status !== Office.AsyncResultStatus.Succeeded) { file.closeAsync(); return resolve(null); }
-            chunks.push(new Uint8Array(r.value.data));
-            if (++i < file.sliceCount) return read();
-            file.closeAsync();
-            resolve(new Blob(chunks, { type: "application/zip" }));
-          });
-        read();
-      }
-    );
-  });
-}
-
-async function getTablesTextFromXml(zipBlob: Blob, slideId: string, shapeIds: string[]): Promise<string> {
-  const zip = await JSZip.loadAsync(zipBlob);
-
-  // Map slideId -> 'ppt/slides/slideN.xml'
-  const presXml  = await zip.file("ppt/presentation.xml")?.async("text");
-  const presRels = await zip.file("ppt/_rels/presentation.xml.rels")?.async("text");
-  if (!presXml || !presRels) return "";
-
-  const nsP = "http://schemas.openxmlformats.org/presentationml/2006/main";
-  const nsA = "http://schemas.openxmlformats.org/drawingml/2006/main";
-  const nsR = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
-
-  const presDoc = new DOMParser().parseFromString(presXml, "application/xml");
-  const relsDoc = new DOMParser().parseFromString(presRels, "application/xml");
-
-  // rId -> Target (e.g., 'slides/slide3.xml')
-  const ridToTarget = new Map<string, string>();
-  for (const rel of Array.from(relsDoc.getElementsByTagName("Relationship"))) {
-    ridToTarget.set(rel.getAttribute("Id")!, rel.getAttribute("Target")!);
-  }
-
-  const sld = Array.from(presDoc.getElementsByTagNameNS(nsP, "sldId"))
-    .find(n => n.getAttribute("id") === slideId);
-  if (!sld) return "";
-
-  const rid = sld.getAttributeNS(nsR, "id");
-  const slidePath = rid ? `ppt/${ridToTarget.get(rid)}` : "";
-  if (!slidePath) return "";
-
-  const slideXml = await zip.file(slidePath)?.async("text");
-  if (!slideXml) return "";
-
-  const slideDoc = new DOMParser().parseFromString(slideXml, "application/xml");
-
-  // Find tables that belong to the selected shapes:
-  // Tables live in <p:graphicFrame> with <p:nvGraphicFramePr><p:cNvPr id="...">
-  const gfNodes = Array.from(slideDoc.getElementsByTagNameNS(nsP, "graphicFrame"));
-  const selectedGfs = gfNodes.filter(gf => {
-    const cNvPr = gf.getElementsByTagNameNS(nsP, "cNvPr")[0];
-    const id = cNvPr?.getAttribute("id");
-    return !!id && shapeIds.includes(id);
-  });
-
-  const cellTexts: string[] = [];
-
-  for (const gf of selectedGfs) {
-    // get the a:tbl inside this graphicFrame
-    const tbl = gf.getElementsByTagNameNS(nsA, "tbl")[0];
-    if (!tbl) continue;
-
-    const rows = Array.from(tbl.getElementsByTagNameNS(nsA, "tr"));
-    for (const row of rows) {
-      const cells = Array.from(row.getElementsByTagNameNS(nsA, "tc"));
-      const line: string[] = [];
-
-      for (const tc of cells) {
-        // Each cell has a:txBody with one or more a:p (paragraphs) made of a:r (runs)
-        const txBody = tc.getElementsByTagNameNS(nsA, "txBody")[0];
-        if (!txBody) { line.push(""); continue; }
-
-        const ps = Array.from(txBody.getElementsByTagNameNS(nsA, "p"));
-        const parts: string[] = [];
-
-        for (const p of ps) {
-          const runs = Array.from(p.getElementsByTagNameNS(nsA, "r"));
-          let paragraphText = "";
-          for (const r of runs) {
-            const t = r.getElementsByTagNameNS(nsA, "t")[0]?.textContent ?? "";
-            paragraphText += t;
-          }
-          parts.push(paragraphText);
+        // Handle table shapes
+        if (shape.type === "Table" && shape.table) {
+          return await extractTableText(shape.table, ctx);
         }
-
-        // Join paragraphs inside the cell with a single space (or "\n" if you prefer)
-        line.push(parts.join(" "));
+        
+        // Handle text shapes (your existing logic)
+        if (shape.type === "GeometricShape" || shape.type === "TextBox") {
+          shape.load("textFrame/hasText,textFrame/textRange/text");
+          await ctx.sync();
+          
+          if (shape.textFrame?.hasText && shape.textFrame?.textRange?.text) {
+            return shape.textFrame.textRange.text.trim();
+          }
+        }
       }
+    }
 
-      cellTexts.push(line.join("\t")); // row as tab-delimited string
+    return "";
+  });
+}
+
+async function extractTableText(table: PowerPoint.Table, ctx: PowerPoint.RequestContext): Promise<string> {
+  // Load table dimensions
+  table.load("rowCount,columnCount");
+  await ctx.sync();
+
+  let tableText = "";
+  
+  // Iterate through all cells
+  for (let row = 0; row < table.rowCount; row++) {
+    let rowText = "";
+    
+    for (let col = 0; col < table.columnCount; col++) {
+      const cell = table.getCell(row, col);
+      cell.load("textFrame/textRange/text");
+      await ctx.sync();
+      
+      const cellText = cell.textFrame?.textRange?.text?.trim() || "";
+      rowText += cellText;
+      
+      // Add tab separator between columns (except last column)
+      if (col < table.columnCount - 1) {
+        rowText += "\t";
+      }
+    }
+    
+    tableText += rowText;
+    
+    // Add newline between rows (except last row)
+    if (row < table.rowCount - 1) {
+      tableText += "\n";
     }
   }
+  
+  return tableText;
+}
 
-  return cellTexts.join("\n");
+// Alternative version that extracts only selected cells if available
+async function extractSelectedTableCells(table: PowerPoint.Table, ctx: PowerPoint.RequestContext): Promise<string> {
+  try {
+    // Try to get selected table range (this might not be available in all Office versions)
+    const selectedRange = table.getSelectedRange();
+    selectedRange.load("rowCount,columnCount,rowIndex,columnIndex");
+    await ctx.sync();
+    
+    let selectedText = "";
+    
+    for (let row = 0; row < selectedRange.rowCount; row++) {
+      let rowText = "";
+      
+      for (let col = 0; col < selectedRange.columnCount; col++) {
+        const actualRow = selectedRange.rowIndex + row;
+        const actualCol = selectedRange.columnIndex + col;
+        
+        const cell = table.getCell(actualRow, actualCol);
+        cell.load("textFrame/textRange/text");
+        await ctx.sync();
+        
+        const cellText = cell.textFrame?.textRange?.text?.trim() || "";
+        rowText += cellText;
+        
+        if (col < selectedRange.columnCount - 1) {
+          rowText += "\t";
+        }
+      }
+      
+      selectedText += rowText;
+      if (row < selectedRange.rowCount - 1) {
+        selectedText += "\n";
+      }
+    }
+    
+    return selectedText;
+  } catch (error) {
+    // Fallback to extracting entire table if selected range is not available
+    return await extractTableText(table, ctx);
+  }
 }
