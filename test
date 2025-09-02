@@ -1,41 +1,195 @@
-export async function getSelectedTextOrTable(): Promise<string> {
+// tiniest-selected-table.ts
+import { unzip } from "unzipit";
+import { parseStringPromise } from "xml2js";
+
+/* ======================= Public API ======================= */
+
+export async function getPptText(): Promise<string> {
   return PowerPoint.run(async (ctx) => {
     // 1) highlighted text
     const sel = ctx.presentation.getSelectedTextRangeOrNullObject();
     await ctx.sync();
     if (!sel.isNullObject) {
-      sel.load("text");
-      await ctx.sync();
-      if (sel.text?.trim()) return sel.text.trim();
+      sel.load("text"); await ctx.sync();
+      const t = sel.text?.trim(); if (t) return t;
     }
 
     // 2) selected shapes
-    const shapes = ctx.presentation.getSelectedShapes();
-    shapes.load("items");
-    await ctx.sync();
-    if (shapes.items.length === 0) return "";
+    const ss = ctx.presentation.getSelectedShapes(); ss.load("items"); await ctx.sync();
+    if (ss.items.length === 0) return "Select a textbox or a table.";
 
-    const shape = shapes.items[0];
-    shape.load("type,name");
+    // load safe props for all
+    ss.items.forEach(s => s.load("type,name,left,top,width,height"));
     await ctx.sync();
 
-    if (shape.type === "Table") {
-      // get just this table’s OOXML
-      const ooxml = shape.getOoxml();
-      await ctx.sync();
-      return extractTextFromOOXML(ooxml.value);
+    // 2a) TextBox → return text
+    for (const s of ss.items as any[]) {
+      if (s.type === "TextBox") {
+        try {
+          s.load("textFrame/textRange/text"); await ctx.sync();
+          const txt = s?.textFrame?.textRange?.text?.trim();
+          if (txt) return txt;
+        } catch {}
+      }
     }
 
-    // 3) textbox fallback
-    shape.load("textFrame/textRange/text");
-    await ctx.sync();
-    return shape.textFrame?.textRange?.text?.trim() ?? "";
+    // 2b) Table → parse PPTX and return only the selected table (TSV)
+    const tShape = (ss.items as any[]).find(s => s.type === "Table");
+    if (!tShape) return "Select a table, then try again.";
+
+    const target: EMUBox = toEMUBox({
+      left: Number(tShape.left),
+      top: Number(tShape.top),
+      width: Number(tShape.width),
+      height: Number(tShape.height),
+    });
+    const selectedName = norm(String(tShape.name ?? ""));
+
+    // 3) pptx → zip → slides → tables
+    const zipBuf = await getCompressedFile();
+    const { entries } = await unzip(zipBuf);
+    const slidePaths = Object.keys(entries)
+      .filter(p => /^ppt\/slides\/slide\d+\.xml$/.test(p))
+      .sort((a,b)=> slideNo(a)-slideNo(b));
+
+    const all: TableInfo[] = [];
+    for (const path of slidePaths) {
+      const slide = slideNo(path);
+      const xml = await entries[path].text();
+      const js  = await parseStringPromise(xml, { explicitArray:true, attrkey:"$", charkey:"_" });
+      all.push(...extractTablesFromSlide(js, slide));
+    }
+    if (!all.length) return "No tables found in the presentation.";
+
+    // 4) rank by geometry + name tie-breaker (smaller score is better)
+    const ranked = all.map(t => {
+      const g = geomScore(target, t.geom);
+      const pen = norm(t.name) === selectedName ? 0 : NAME_PENALTY;
+      return { ...t, score: g + pen, g, pen };
+    }).sort((a,b)=> a.score - b.score);
+
+    // optional: refuse if top two are too close (comment out to always pick best)
+    const best = ranked[0], second = ranked[1];
+    if (second && best.score + AMBIGUITY_MARGIN >= second.score) {
+      return "Ambiguous selection (two tables look the same).\n" +
+             ranked.slice(0,5).map((r,i)=>`${i+1}. score=${fix(r.score)} slide=${r.slideNo} name=${r.name}`).join("\n");
+    }
+    return best.tsv;
   });
 }
 
-function extractTextFromOOXML(xml: string): string {
-  const matches = Array.from(xml.matchAll(/<a:t[^>]*>(.*?)<\/a:t>/g));
-  const texts = matches.map((m) => m[1].trim()).filter(Boolean);
-  // crude join into TSV: separate cells with tab, rows with newline
-  return texts.join("\t").replace(/\t{2,}/g, "\n");
+/* ======================= Config ======================= */
+const EMU_PER_PT = 12700;
+const NAME_PENALTY = 0.05;      // prefer same name when geometry ties
+const AMBIGUITY_MARGIN = 0.02;  // require clear gap between #1 and #2
+
+/* ======================= Types ======================= */
+type EMUBox = { x: number; y: number; cx: number; cy: number };
+type TableInfo = { slideNo: number; name: string; geom: EMUBox; tsv: string };
+
+/* ======================= Extractors ======================= */
+
+function extractTablesFromSlide(js: any, slideNo: number): TableInfo[] {
+  const out: TableInfo[] = [];
+  const gfs = findAll(js, ":graphicFrame");
+  for (const gf of gfs) {
+    const nv = findFirst(gf, ":nvGraphicFramePr");
+    const cNvPr = nv && findFirst(nv, ":cNvPr");
+    const name = (cNvPr?.$?.name ?? "").toString();
+
+    const xfrm = findFirst(gf, ":xfrm");
+    const off  = xfrm && findFirst(xfrm, ":off");
+    const ext  = xfrm && findFirst(xfrm, ":ext");
+    const tbl  = findFirst(findFirst(findFirst(gf, ":graphic")!, ":graphicData")!, ":tbl");
+    if (!off?.$ || !ext?.$ || !tbl) continue;
+
+    const geom: EMUBox = { x:n(off.$.x), y:n(off.$.y), cx:n(ext.$.cx), cy:n(ext.$.cy) };
+    out.push({ slideNo, name, geom, tsv: tblToTSV(tbl) });
+  }
+  return out;
 }
+
+function tblToTSV(tbl:any): string {
+  const rows = findAll(tbl, ":tr");
+  const lines: string[] = [];
+  for (const tr of rows) {
+    const cells = findAll(tr, ":tc");
+    const vals = cells.map(tc =>
+      findAll(tc, ":t").map((n:any)=> (typeof n==="string"? n : n?._ || "")).join(" ").trim()
+    );
+    let end = vals.length; while (end>0 && !vals[end-1]) end--;
+    lines.push(vals.slice(0,end).join("\t"));
+  }
+  while (lines.length && !lines[lines.length-1]) lines.pop();
+  return lines.join("\n");
+}
+
+/* ======================= Ranking helpers ======================= */
+
+function geomScore(a: EMUBox, b: EMUBox): number {
+  const dx = Math.abs(a.x - b.x)  / (b.cx || 1);
+  const dy = Math.abs(a.y - b.y)  / (b.cy || 1);
+  const dw = Math.abs(a.cx - b.cx)/ (b.cx || 1);
+  const dh = Math.abs(a.cy - b.cy)/ (b.cy || 1);
+  return (dx + dy + dw + dh) / 4;
+}
+
+/* ======================= Generic JSON helpers ======================= */
+
+function findAll(node:any, suffix:string): any[] {
+  const out:any[] = []; if (!node || typeof node!=="object") return out;
+  for (const [k,v] of Object.entries(node)) {
+    if (k.endsWith(suffix)) out.push(...(Array.isArray(v)?v:[v]));
+    const val = (node as any)[k];
+    if (Array.isArray(val)) val.forEach(ch => out.push(...findAll(ch, suffix)));
+    else if (val && typeof val === "object") out.push(...findAll(val, suffix));
+  }
+  return out;
+}
+function findFirst(node:any, suffix:string): any|null {
+  if (!node || typeof node!=="object") return null;
+  for (const [k,v] of Object.entries(node)) {
+    if (k.endsWith(suffix)) return Array.isArray(v)? v[0] : v;
+    const val = (node as any)[k];
+    if (Array.isArray(val)) { for (const ch of val) { const got = findFirst(ch, suffix); if (got) return got; } }
+    else if (val && typeof val === "object") { const got = findFirst(val, suffix); if (got) return got; }
+  }
+  return null;
+}
+
+/* ======================= Office file (compressed) ======================= */
+
+async function getCompressedFile(): Promise<ArrayBuffer> {
+  const file = await new Promise<Office.File>((res,rej)=>{
+    Office.context.document.getFileAsync(Office.FileType.Compressed, r =>
+      r.status===Office.AsyncResultStatus.Succeeded ? res(r.value) : rej(r.error)
+    );
+  });
+  try {
+    const parts: Uint8Array[] = [];
+    for (let i=0;i<file.sliceCount;i++){
+      const r = await new Promise<Office.AsyncResult<Office.Slice>>((res,rej)=>{
+        file.getSliceAsync(i, s => s.status===Office.AsyncResultStatus.Succeeded ? res(s) : rej(s.error));
+      });
+      parts.push(new Uint8Array(r.value.data as number[]));
+    }
+    const total = parts.reduce((s,p)=>s+p.length,0);
+    const buf = new Uint8Array(total); let off=0; for (const p of parts){ buf.set(p,off); off+=p.length; }
+    return buf.buffer;
+  } finally { file.closeAsync(()=>{}); }
+}
+
+/* ======================= tiny utils ======================= */
+
+function toEMUBox(pts:{left:number;top:number;width:number;height:number}): EMUBox {
+  return {
+    x: Math.round(pts.left   * EMU_PER_PT),
+    y: Math.round(pts.top    * EMU_PER_PT),
+    cx: Math.round(pts.width * EMU_PER_PT),
+    cy: Math.round(pts.height* EMU_PER_PT),
+  };
+}
+const norm = (s:string)=> s.trim().replace(/\s+/g," ").toLowerCase();
+const slideNo = (p:string)=> parseInt(p.match(/slide(\d+)\.xml/)![1], 10);
+const n = (v:any)=> Number.isFinite(+v) ? +v : 0;
+const fix = (x:number)=> (Math.round(x*10000)/10000).toFixed(4);
