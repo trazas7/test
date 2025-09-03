@@ -1,96 +1,129 @@
 // ppt-selected-table-dom.ts
-// Minimal, browser-safe: unzipit + DOMParser (no Node polyfills).
+// Minimal, browser-safe table/text extractor for PowerPoint add-ins.
+// - If highlighted text exists → returns it.
+// - Else if a TextBox is selected → returns its text.
+// - Else if a Table is selected → returns ONLY that table as TSV (rows \n, cells \t).
+// - Throws on any error/ambiguous case (no string error returns).
 
 import { unzip } from "unzipit";
 
-/* ======================= Public API ======================= */
+/* ───────────────────────────────── Public API ───────────────────────────────── */
 
+/**
+ * Get selected text or the selected table (as TSV).
+ * Throws Error when nothing is selected, no tables exist, or the match is ambiguous.
+ */
 export async function getPptText(): Promise<string> {
   return PowerPoint.run(async (ctx) => {
-    // 1) highlighted text (fast path)
+    // 1) Highlighted text (fast path)
     const sel = ctx.presentation.getSelectedTextRangeOrNullObject();
     await ctx.sync();
     if (!sel.isNullObject) {
-      sel.load("text"); await ctx.sync();
-      const t = sel.text?.trim(); if (t) return t;
+      sel.load("text");
+      await ctx.sync();
+      const t = sel.text?.trim();
+      if (t) return t;
     }
 
-    // 2) selected shapes
-    const ss = ctx.presentation.getSelectedShapes(); ss.load("items"); await ctx.sync();
-    if (ss.items.length === 0) return "Select a textbox or a table.";
+    // 2) Selected shapes
+    const ss = ctx.presentation.getSelectedShapes();
+    ss.load("items");
+    await ctx.sync();
+    if (ss.items.length === 0) {
+      throw new Error("Nothing selected. Select a textbox or a table.");
+    }
 
-    ss.items.forEach(s => s.load("type,name,left,top,width,height"));
+    // We only read safe props for all shapes
+    ss.items.forEach((s) => s.load("type,name,left,top,width,height"));
     await ctx.sync();
 
-    // 2a) TextBox → return text
+    // 2a) If any TextBox has text, return it
     for (const s of ss.items as any[]) {
       if (s.type === "TextBox") {
         try {
-          s.load("textFrame/textRange/text"); await ctx.sync();
+          s.load("textFrame/textRange/text");
+          await ctx.sync();
           const txt = s?.textFrame?.textRange?.text?.trim();
           if (txt) return txt;
-        } catch {/* ignore */}
+        } catch {
+          /* ignore, keep scanning */
+        }
       }
     }
 
-    // 2b) Table → parse PPTX and return only the selected table (TSV)
-    const tShape = (ss.items as any[]).find(s => s.type === "Table");
-    if (!tShape) return "Select a table, then try again.";
+    // 2b) Otherwise require a Table selection
+    const tableShape = (ss.items as any[]).find((s) => s.type === "Table");
+    if (!tableShape) {
+      throw new Error("Select a table (or highlight text in a textbox).");
+    }
 
+    // Convert selected table geometry (points → EMUs) and keep its display name
     const target = toEMUBox({
-      left: Number(tShape.left),
-      top: Number(tShape.top),
-      width: Number(tShape.width),
-      height: Number(tShape.height),
+      left: Number(tableShape.left),
+      top: Number(tableShape.top),
+      width: Number(tableShape.width),
+      height: Number(tableShape.height),
     });
-    const selectedName = norm(String(tShape.name ?? ""));
+    const selectedName = normalize(String(tableShape.name ?? ""));
 
-    // 3) pptx → zip → slides → tables
-    const zipBuf = await getCompressedFile();
-    const { entries } = await unzip(zipBuf);
+    // 3) Read the PPTX as a ZIP and parse each slide’s XML
+    const zipBuffer = await getCompressedFile();
+    const { entries } = await unzip(zipBuffer);
     const slidePaths = Object.keys(entries)
-      .filter(p => /^ppt\/slides\/slide\d+\.xml$/.test(p))
-      .sort((a,b)=> slideNo(a)-slideNo(b));
+      .filter((p) => /^ppt\/slides\/slide\d+\.xml$/.test(p))
+      .sort((a, b) => slideNo(a) - slideNo(b));
 
-    const all: TableInfo[] = [];
+    // Gather ALL tables (name + geometry + TSV) from ALL slides
+    const allTables: TableInfo[] = [];
     for (const path of slidePaths) {
-      const slide = slideNo(path);
       const xml = await entries[path].text();
-      all.push(...extractTablesFromSlideXML(xml, slide));
+      allTables.push(...extractTablesFromSlideXML(xml, slideNo(path)));
     }
-    if (!all.length) return "No tables found in the presentation.";
+    if (allTables.length === 0) {
+      throw new Error("No tables found in the presentation.");
+    }
 
-    // 4) rank by geometry + small name tie-breaker
-    const ranked = all.map(t => {
-      const g = geomScore(target, t.geom);
-      const pen = norm(t.name) === selectedName ? 0 : NAME_PENALTY;
-      return { ...t, score: g + pen, g, pen };
-    }).sort((a,b)=> a.score - b.score);
+    // 4) Pick the best match: geometry score + small name tie-breaker
+    const ranked = allTables
+      .map((t) => {
+        const g = geomScore(target, t.geom);
+        const namePenalty = normalize(t.name) === selectedName ? 0 : NAME_MISMATCH_PENALTY;
+        return { ...t, score: g + namePenalty };
+      })
+      .sort((a, b) => a.score - b.score);
 
-    // optional: enforce a clear margin between #1 and #2
-    const best = ranked[0], second = ranked[1];
+    // Optionally require a clear margin between #1 and #2 to avoid mistakes
+    const best = ranked[0];
+    const second = ranked[1];
     if (second && best.score + AMBIGUITY_MARGIN >= second.score) {
-      return "Ambiguous selection (two tables look the same).\n" +
-             ranked.slice(0,5).map((r,i)=>`${i+1}. score=${fix(r.score)} slide=${r.slideNo} name=${r.name}`).join("\n");
+      throw new Error(
+        "Ambiguous selection: multiple tables look identical. " +
+          "Nudge or resize the table slightly, or rename it uniquely, then try again."
+      );
     }
+
     return best.tsv;
   });
 }
 
-/* ======================= Config & Types ======================= */
+/* ───────────────────────────────── Config ───────────────────────────────── */
 
-const EMU_PER_PT = 12700;
-const NAME_PENALTY = 0.05;      // prefer same name when geometry ties
-const AMBIGUITY_MARGIN = 0.02;  // require clear gap between #1 and #2
+const EMU_PER_PT = 12700;       // Office units: 1pt = 12700 EMUs
+const NAME_MISMATCH_PENALTY = 0.05; // prefer same-name when geometry ties
+const AMBIGUITY_MARGIN = 0.02;      // require this gap between #1 and #2
+
+/* ───────────────────────────────── Types ───────────────────────────────── */
 
 type EMUBox = { x: number; y: number; cx: number; cy: number };
 type TableInfo = { slideNo: number; name: string; geom: EMUBox; tsv: string };
 
-/* ======================= Slide XML → Tables ======================= */
+/* ───────────────────────── Slide XML → Tables (DOMParser) ───────────────────────── */
 
+/**
+ * Returns all tables on a slide with: display name, geometry, and TSV text.
+ */
 function extractTablesFromSlideXML(xml: string, slideNo: number): TableInfo[] {
   const doc = new DOMParser().parseFromString(xml, "application/xml");
-  // Get all graphicFrames (tables live inside)
   const frames = Array.from(doc.getElementsByTagNameNS("*", "graphicFrame"));
   const out: TableInfo[] = [];
 
@@ -100,12 +133,12 @@ function extractTablesFromSlideXML(xml: string, slideNo: number): TableInfo[] {
     const name = (cNvPr?.getAttribute("name") ?? "").toString();
 
     const xfrm = firstChildLocal(gf, "xfrm");
-    const off  = xfrm ? firstChildLocal(xfrm, "off") : null;
-    const ext  = xfrm ? firstChildLocal(xfrm, "ext") : null;
+    const off = xfrm ? firstChildLocal(xfrm, "off") : null;
+    const ext = xfrm ? firstChildLocal(xfrm, "ext") : null;
 
     const graphic = firstChildLocal(gf, "graphic");
-    const gData   = graphic ? firstChildLocal(graphic, "graphicData") : null;
-    const tbl     = gData ? firstChildLocal(gData, "tbl") : null;
+    const gData = graphic ? firstChildLocal(graphic, "graphicData") : null;
+    const tbl = gData ? firstChildLocal(gData, "tbl") : null;
 
     if (!off || !ext || !tbl) continue;
 
@@ -116,23 +149,22 @@ function extractTablesFromSlideXML(xml: string, slideNo: number): TableInfo[] {
       cy: toNum(ext.getAttribute("cy")),
     };
 
-    const tsv = tableElementToTSV(tbl);
-    out.push({ slideNo, name, geom, tsv });
+    out.push({ slideNo, name, geom, tsv: tableElementToTSV(tbl) });
   }
-
   return out;
 }
 
-/* ======================= TSV extraction ======================= */
+/* ───────────────────────────── TSV extraction ───────────────────────────── */
 
+/** Convert a `<a:tbl>` element into TSV text. */
 function tableElementToTSV(tblEl: Element): string {
   const rows = Array.from(tblEl.getElementsByTagNameNS("*", "tr"));
   const lines: string[] = [];
 
   for (const tr of rows) {
     const cells = Array.from(tr.getElementsByTagNameNS("*", "tc"));
-    const vals = cells.map(tc => getCellText(tc));
-    // trim trailing empties
+    const vals = cells.map(getCellText);
+    // Trim trailing empty cells for a tidy TSV
     let end = vals.length;
     while (end > 0 && (!vals[end - 1] || !vals[end - 1].trim())) end--;
     lines.push(vals.slice(0, end).join("\t"));
@@ -141,58 +173,71 @@ function tableElementToTSV(tblEl: Element): string {
   return lines.join("\n");
 }
 
+/** Get all text from a `<a:tc>` cell, honoring `<a:br/>` as newline. */
 function getCellText(tc: Element): string {
-  // collect a:t (text) and a:br (line breaks)
   const walker = tc.ownerDocument!.createTreeWalker(
     tc,
     NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT
   );
   let out = "";
-  let n: Node | null = walker.nextNode();
-  while (n) {
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
     if (n.nodeType === Node.ELEMENT_NODE) {
       const el = n as Element;
       if (el.localName === "t") out += el.textContent ?? "";
       else if (el.localName === "br") out += "\n";
     }
-    n = walker.nextNode();
   }
-  return (out || "").replace(/\s+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  return out.replace(/\s+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
-/* ======================= Ranking helpers ======================= */
+/* ───────────────────────────── Matching helpers ─────────────────────────── */
 
 function geomScore(a: EMUBox, b: EMUBox): number {
-  const dx = Math.abs(a.x - b.x)  / (b.cx || 1);
-  const dy = Math.abs(a.y - b.y)  / (b.cy || 1);
-  const dw = Math.abs(a.cx - b.cx)/ (b.cx || 1);
-  const dh = Math.abs(a.cy - b.cy)/ (b.cy || 1);
+  // Scale-invariant distance: position + size (each normalized by candidate size)
+  const dx = Math.abs(a.x - b.x) / (b.cx || 1);
+  const dy = Math.abs(a.y - b.y) / (b.cy || 1);
+  const dw = Math.abs(a.cx - b.cx) / (b.cx || 1);
+  const dh = Math.abs(a.cy - b.cy) / (b.cy || 1);
   return (dx + dy + dw + dh) / 4;
 }
 
-/* ======================= Office file (compressed) ======================= */
+/* ─────────────────────────── Office file (ZIP) ──────────────────────────── */
 
+/** Read the current presentation as a ZIP (ArrayBuffer). */
 async function getCompressedFile(): Promise<ArrayBuffer> {
-  const file = await new Promise<Office.File>((res,rej)=>{
-    Office.context.document.getFileAsync(Office.FileType.Compressed, r =>
-      r.status===Office.AsyncResultStatus.Succeeded ? res(r.value) : rej(r.error)
-    );
+  const file = await new Promise<Office.File>((resolve, reject) => {
+    Office.context.document.getFileAsync(Office.FileType.Compressed, (res) => {
+      if (res.status === Office.AsyncResultStatus.Succeeded) resolve(res.value);
+      else reject(new Error(`getFileAsync failed: ${res.error?.message || res.error}`));
+    });
   });
+
   try {
     const parts: Uint8Array[] = [];
-    for (let i=0;i<file.sliceCount;i++){
-      const r = await new Promise<Office.AsyncResult<Office.Slice>>((res,rej)=>{
-        file.getSliceAsync(i, s => s.status===Office.AsyncResultStatus.Succeeded ? res(s) : rej(s.error));
+    for (let i = 0; i < file.sliceCount; i++) {
+      const r = await new Promise<Office.AsyncResult<Office.Slice>>((resolve, reject) => {
+        file.getSliceAsync(i, (s) =>
+          s.status === Office.AsyncResultStatus.Succeeded
+            ? resolve(s)
+            : reject(new Error(`getSliceAsync(${i}) failed: ${s.error?.message || s.error}`))
+        );
       });
       parts.push(new Uint8Array(r.value.data as number[]));
     }
-    const total = parts.reduce((s,p)=>s+p.length,0);
-    const buf = new Uint8Array(total); let off=0; for (const p of parts){ buf.set(p,off); off+=p.length; }
+    const total = parts.reduce((sum, u) => sum + u.length, 0);
+    const buf = new Uint8Array(total);
+    let off = 0;
+    for (const u of parts) {
+      buf.set(u, off);
+      off += u.length;
+    }
     return buf.buffer;
-  } finally { file.closeAsync(()=>{}); }
+  } finally {
+    file.closeAsync(() => void 0);
+  }
 }
 
-/* ======================= Tiny utilities ======================= */
+/* ─────────────────────────────── Utilities ──────────────────────────────── */
 
 function firstChildLocal(parent: Element, local: string): Element | null {
   for (let i = 0; i < parent.childNodes.length; i++) {
@@ -204,16 +249,15 @@ function firstChildLocal(parent: Element, local: string): Element | null {
   return null;
 }
 
-function toEMUBox(pts:{left:number;top:number;width:number;height:number}): EMUBox {
+function toEMUBox(pts: { left: number; top: number; width: number; height: number }): EMUBox {
   return {
-    x: Math.round(pts.left   * EMU_PER_PT),
-    y: Math.round(pts.top    * EMU_PER_PT),
+    x: Math.round(pts.left * EMU_PER_PT),
+    y: Math.round(pts.top * EMU_PER_PT),
     cx: Math.round(pts.width * EMU_PER_PT),
-    cy: Math.round(pts.height* EMU_PER_PT),
+    cy: Math.round(pts.height * EMU_PER_PT),
   };
 }
 
-const norm = (s:string)=> s.trim().replace(/\s+/g," ").toLowerCase();
-const slideNo = (p:string)=> parseInt(p.match(/slide(\d+)\.xml/)![1], 10);
-const toNum = (v:any)=> Number.isFinite(+v) ? +v : 0;
-const fix = (x:number)=> (Math.round(x*10000)/10000).toFixed(4);
+const normalize = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
+const slideNo = (p: string) => parseInt(p.match(/slide(\d+)\.xml/)![1], 10);
+const toNum = (v: any) => (Number.isFinite(+v) ? +v : 0);
