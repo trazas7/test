@@ -1,21 +1,16 @@
-// ppt-selected-table-dom.ts
-// Minimal, browser-safe table/text extractor for PowerPoint add-ins.
-// - If highlighted text exists → returns it.
-// - Else if a TextBox is selected → returns its text.
-// - Else if a Table is selected → returns ONLY that table as TSV (rows \n, cells \t).
-// - Throws on any error/ambiguous case (no string error returns).
+// ppt-selected-table-dom-with-links.ts
+// Minimal, browser-safe extractor that keeps hyperlinks from PPT tables.
+// - Returns highlighted text, textbox text, or the selected table as TSV.
+// - Hyperlinks inside cells are preserved as "Text (https://url)" by default.
+//   Change LINK_OUTPUT to "excel" or "markdown" if you prefer other formats.
 
 import { unzip } from "unzipit";
 
-/* ───────────────────────────────── Public API ───────────────────────────────── */
+/* ─────────────── Public API ─────────────── */
 
-/**
- * Get selected text or the selected table (as TSV).
- * Throws Error when nothing is selected, no tables exist, or the match is ambiguous.
- */
 export async function getPptText(): Promise<string> {
   return PowerPoint.run(async (ctx) => {
-    // 1) Highlighted text (fast path)
+    // 1) Highlighted text
     const sel = ctx.presentation.getSelectedTextRangeOrNullObject();
     await ctx.sync();
     if (!sel.isNullObject) {
@@ -33,11 +28,10 @@ export async function getPptText(): Promise<string> {
       throw new Error("Nothing selected. Select a textbox or a table.");
     }
 
-    // We only read safe props for all shapes
     ss.items.forEach((s) => s.load("type,name,left,top,width,height"));
     await ctx.sync();
 
-    // 2a) If any TextBox has text, return it
+    // TextBox fast path
     for (const s of ss.items as any[]) {
       if (s.type === "TextBox") {
         try {
@@ -45,84 +39,83 @@ export async function getPptText(): Promise<string> {
           await ctx.sync();
           const txt = s?.textFrame?.textRange?.text?.trim();
           if (txt) return txt;
-        } catch {
-          /* ignore, keep scanning */
-        }
+        } catch {}
       }
     }
 
-    // 2b) Otherwise require a Table selection
+    // Table required
     const tableShape = (ss.items as any[]).find((s) => s.type === "Table");
-    if (!tableShape) {
-      throw new Error("Select a table (or highlight text in a textbox).");
-    }
+    if (!tableShape) throw new Error("Select a table (or highlight text in a textbox).");
 
-    // Convert selected table geometry (points → EMUs) and keep its display name
     const target = toEMUBox({
       left: Number(tableShape.left),
       top: Number(tableShape.top),
       width: Number(tableShape.width),
       height: Number(tableShape.height),
     });
-    const selectedName = normalize(String(tableShape.name ?? ""));
+    const selectedNameNorm = normalize(String(tableShape.name ?? ""));
 
-    // 3) Read the PPTX as a ZIP and parse each slide’s XML
+    // 3) Read PPTX → slides + their .rels
     const zipBuffer = await getCompressedFile();
     const { entries } = await unzip(zipBuffer);
+
     const slidePaths = Object.keys(entries)
       .filter((p) => /^ppt\/slides\/slide\d+\.xml$/.test(p))
       .sort((a, b) => slideNo(a) - slideNo(b));
 
-    // Gather ALL tables (name + geometry + TSV) from ALL slides
     const allTables: TableInfo[] = [];
-    for (const path of slidePaths) {
-      const xml = await entries[path].text();
-      allTables.push(...extractTablesFromSlideXML(xml, slideNo(path)));
-    }
-    if (allTables.length === 0) {
-      throw new Error("No tables found in the presentation.");
-    }
+    for (const spath of slidePaths) {
+      const sNo = slideNo(spath);
+      const xml = await entries[spath].text();
 
-    // 4) Pick the best match: geometry score + small name tie-breaker
+      // read relationships for this slide (if present)
+      const relPath = `ppt/slides/_rels/slide${sNo}.xml.rels`;
+      const relsMap = entries[relPath] ? await parseSlideRels(await entries[relPath].text()) : new Map();
+
+      allTables.push(...extractTablesFromSlideXML(xml, sNo, relsMap));
+    }
+    if (allTables.length === 0) throw new Error("No tables found in the presentation.");
+
+    // 4) Pick best by geometry + tiny name tie-breaker
     const ranked = allTables
       .map((t) => {
         const g = geomScore(target, t.geom);
-        const namePenalty = normalize(t.name) === selectedName ? 0 : NAME_MISMATCH_PENALTY;
+        const namePenalty = normalize(t.name) === selectedNameNorm ? 0 : NAME_MISMATCH_PENALTY;
         return { ...t, score: g + namePenalty };
       })
       .sort((a, b) => a.score - b.score);
 
-    // Optionally require a clear margin between #1 and #2 to avoid mistakes
-    const best = ranked[0];
-    const second = ranked[1];
+    const best = ranked[0], second = ranked[1];
     if (second && best.score + AMBIGUITY_MARGIN >= second.score) {
-      throw new Error(
-        "Ambiguous selection: multiple tables look identical. " +
-          "Nudge or resize the table slightly, or rename it uniquely, then try again."
-      );
+      throw new Error("Ambiguous selection: tables look identical. Nudge/resize or rename, then try again.");
     }
 
     return best.tsv;
   });
 }
 
-/* ───────────────────────────────── Config ───────────────────────────────── */
+/* ─────────────── Config ─────────────── */
 
-const EMU_PER_PT = 12700;       // Office units: 1pt = 12700 EMUs
+const EMU_PER_PT = 12700;
 const NAME_MISMATCH_PENALTY = 0.05; // prefer same-name when geometry ties
-const AMBIGUITY_MARGIN = 0.02;      // require this gap between #1 and #2
+const AMBIGUITY_MARGIN = 0.02;      // require clear gap between #1 and #2
 
-/* ───────────────────────────────── Types ───────────────────────────────── */
+// How linked text is emitted inside cells:
+type LinkOutput = "inline" | "excel" | "markdown";
+/** "inline":  `Text (https://url)` — human-friendly TSV
+ *  "excel":   `=HYPERLINK("https://url","Text")` — Excel-clickable
+ *  "markdown": `[Text](https://url)` — Markdown
+ */
+const LINK_OUTPUT: LinkOutput = "inline";
+
+/* ─────────────── Types ─────────────── */
 
 type EMUBox = { x: number; y: number; cx: number; cy: number };
 type TableInfo = { slideNo: number; name: string; geom: EMUBox; tsv: string };
 
-/* ───────────────────────── Slide XML → Tables (DOMParser) ───────────────────────── */
+/* ───────── Slide XML → Tables (with hyperlink support) ───────── */
 
-/**
- * Returns all tables on a slide with: display name, geometry, and TSV text.
- */
-function extractTablesFromSlideXML(xml: string, slideNo: number): TableInfo[] {
+function extractTablesFromSlideXML(xml: string, slideNo: number, rels: Map<string, string>): TableInfo[] {
   const doc = new DOMParser().parseFromString(xml, "application/xml");
   const frames = Array.from(doc.getElementsByTagNameNS("*", "graphicFrame"));
   const out: TableInfo[] = [];
@@ -149,22 +142,22 @@ function extractTablesFromSlideXML(xml: string, slideNo: number): TableInfo[] {
       cy: toNum(ext.getAttribute("cy")),
     };
 
-    out.push({ slideNo, name, geom, tsv: tableElementToTSV(tbl) });
+    const tsv = tableElementToTSV(tbl, rels);
+    out.push({ slideNo, name, geom, tsv });
   }
   return out;
 }
 
-/* ───────────────────────────── TSV extraction ───────────────────────────── */
+/* ───────── TSV extraction that preserves hyperlinks ───────── */
 
-/** Convert a `<a:tbl>` element into TSV text. */
-function tableElementToTSV(tblEl: Element): string {
+function tableElementToTSV(tblEl: Element, rels: Map<string, string>): string {
   const rows = Array.from(tblEl.getElementsByTagNameNS("*", "tr"));
   const lines: string[] = [];
 
   for (const tr of rows) {
     const cells = Array.from(tr.getElementsByTagNameNS("*", "tc"));
-    const vals = cells.map(getCellText);
-    // Trim trailing empty cells for a tidy TSV
+    const vals = cells.map((tc) => getCellTextWithLinks(tc, rels));
+    // Trim trailing empty cells
     let end = vals.length;
     while (end > 0 && (!vals[end - 1] || !vals[end - 1].trim())) end--;
     lines.push(vals.slice(0, end).join("\t"));
@@ -173,27 +166,101 @@ function tableElementToTSV(tblEl: Element): string {
   return lines.join("\n");
 }
 
-/** Get all text from a `<a:tc>` cell, honoring `<a:br/>` as newline. */
-function getCellText(tc: Element): string {
-  const walker = tc.ownerDocument!.createTreeWalker(
-    tc,
-    NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT
-  );
-  let out = "";
-  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-    if (n.nodeType === Node.ELEMENT_NODE) {
-      const el = n as Element;
-      if (el.localName === "t") out += el.textContent ?? "";
-      else if (el.localName === "br") out += "\n";
+/**
+ * Extract text from a `<a:tc>` cell, keeping hyperlinks.
+ * We look at `<a:r>` runs; if an `<a:rPr>` has `<a:hlinkClick r:id="rIdX">`,
+ * we map rIdX through the slide's .rels to a URL and format it.
+ */
+function getCellTextWithLinks(tc: Element, rels: Map<string, string>): string {
+  let pieces: string[] = [];
+
+  const runs = Array.from(tc.getElementsByTagNameNS("*", "r"));
+  if (runs.length) {
+    for (const r of runs) {
+      const rPr = firstChildLocal(r, "rPr");
+      let url: string | null = null;
+
+      if (rPr) {
+        const hlink = firstChildLocal(rPr, "hlinkClick"); // may be null
+        const rId = hlink?.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id")
+                  || hlink?.getAttribute("r:id"); // fallback if ns not bound
+        if (rId) url = rels.get(rId) ?? null;
+      }
+
+      const tNodes = Array.from(r.getElementsByTagNameNS("*", "t"));
+      let txt = tNodes.map((t) => t.textContent ?? "").join("").trim();
+
+      // If there are explicit line breaks within the run
+      if (Array.from(r.getElementsByTagNameNS("*", "br")).length > 0) {
+        txt = txt.replace(/\s{2,}/g, "\n");
+      }
+
+      if (txt) {
+        pieces.push(url ? formatLinkedText(txt, url) : txt);
+      }
     }
+  } else {
+    // Fallback: old method (walk entire cell); keeps line breaks but no link granularity
+    const walker = tc.ownerDocument!.createTreeWalker(
+      tc,
+      NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT
+    );
+    let out = "";
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      if (n.nodeType === Node.ELEMENT_NODE) {
+        const el = n as Element;
+        if (el.localName === "t") out += el.textContent ?? "";
+        else if (el.localName === "br") out += "\n";
+      }
+    }
+    return out.replace(/\s+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
   }
-  return out.replace(/\s+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+
+  // Collapse whitespace between pieces nicely
+  return pieces.join(" ").replace(/\s{2,}/g, " ").trim();
 }
 
-/* ───────────────────────────── Matching helpers ─────────────────────────── */
+/** Format a single linked snippet according to output mode. */
+function formatLinkedText(text: string, url: string): string {
+  switch (LINK_OUTPUT) {
+    case "excel":
+      // Excel-friendly hyperlink formula (keep quotes escaped)
+      const safeText = text.replace(/"/g, '""');
+      const safeUrl = url.replace(/"/g, '""');
+      return `=HYPERLINK("${safeUrl}","${safeText}")`;
+    case "markdown":
+      return `[${text}](${url})`;
+    case "inline":
+    default:
+      return `${text} (${url})`;
+  }
+}
+
+/* ───────── Slide .rels → Map(rId → URL) ───────── */
+
+function parseSlideRels(relsXml: string): Map<string, string> {
+  const map = new Map<string, string>();
+  const doc = new DOMParser().parseFromString(relsXml, "application/xml");
+  const rels = Array.from(doc.getElementsByTagNameNS(
+    "http://schemas.openxmlformats.org/package/2006/relationships",
+    "Relationship"
+  ));
+  for (const rel of rels) {
+    const id = rel.getAttribute("Id");
+    const target = rel.getAttribute("Target");
+    const type = rel.getAttribute("Type") || "";
+    // Only map hyperlink relationships
+    if (id && target && type.endsWith("/hyperlink")) {
+      // Targets are usually absolute URLs for hyperlinks; if relative, you may need to resolve.
+      map.set(id, target);
+    }
+  }
+  return map;
+}
+
+/* ───────── Matching / geometry helpers ───────── */
 
 function geomScore(a: EMUBox, b: EMUBox): number {
-  // Scale-invariant distance: position + size (each normalized by candidate size)
   const dx = Math.abs(a.x - b.x) / (b.cx || 1);
   const dy = Math.abs(a.y - b.y) / (b.cy || 1);
   const dw = Math.abs(a.cx - b.cx) / (b.cx || 1);
@@ -201,9 +268,8 @@ function geomScore(a: EMUBox, b: EMUBox): number {
   return (dx + dy + dw + dh) / 4;
 }
 
-/* ─────────────────────────── Office file (ZIP) ──────────────────────────── */
+/* ───────── Office file (ZIP) ───────── */
 
-/** Read the current presentation as a ZIP (ArrayBuffer). */
 async function getCompressedFile(): Promise<ArrayBuffer> {
   const file = await new Promise<Office.File>((resolve, reject) => {
     Office.context.document.getFileAsync(Office.FileType.Compressed, (res) => {
@@ -237,7 +303,7 @@ async function getCompressedFile(): Promise<ArrayBuffer> {
   }
 }
 
-/* ─────────────────────────────── Utilities ──────────────────────────────── */
+/* ───────── Tiny utils ───────── */
 
 function firstChildLocal(parent: Element, local: string): Element | null {
   for (let i = 0; i < parent.childNodes.length; i++) {
