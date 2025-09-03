@@ -1,439 +1,60 @@
-// ppt-text-reader.ts
-// Works in Office taskpane (no node polyfills). Preserves hyperlinks for text shapes & tables.
-
-import { unzip } from "unzipit";
-
-/* =============================== Public API =============================== */
-
-export async function getPptText(): Promise<string> {
-  return PowerPoint.run(async (ctx) => {
-    // 1) If user highlighted text: we still resolve to the containing shape
-    const sel = ctx.presentation.getSelectedTextRangeOrNullObject();
-    await ctx.sync();
-
-    const shapes = ctx.presentation.getSelectedShapes();
-    shapes.load("items");
-    await ctx.sync();
-    if (shapes.items.length === 0) throw new Error("Nothing selected. Select a text shape or a table.");
-
-    // Load everything we need ONCE
-    shapes.items.forEach((s) =>
-      s.load("type,name,left,top,width,height,textFrame/hasText")
-    );
-    await ctx.sync();
-
-    // Determine intent: prefer a table if any; otherwise the first shape that actually has text
-    const selectedTable = (shapes.items as any[]).find((s) => s.type === "Table");
-    const selectedTextShape = (shapes.items as any[]).find(
-      (s) => !!s.textFrame?.hasText // any shape that contains text (TextBox, Placeholder, Rectangle…)
-    );
-
-    // Download PPTX once (used by both paths)
-    const zipBuffer = await getCompressedFile();
-    const { entries } = await unzip(zipBuffer);
-    const slidePaths = Object.keys(entries)
-      .filter((p) => /^ppt\/slides\/slide\d+\.xml$/.test(p))
-      .sort((a, b) => slideNo(a) - slideNo(b));
-
-    // === A) TEXT SHAPE (with hyperlinks) ===
-    if (selectedTextShape) {
-      const target = toEMUBox({
-        left: +selectedTextShape.left,
-        top: +selectedTextShape.top,
-        width: +selectedTextShape.width,
-        height: +selectedTextShape.height,
-      });
-      const selNameNorm = normalize(String(selectedTextShape.name ?? ""));
-
-      const all: TextShapeInfo[] = [];
-      for (const sp of slidePaths) {
-        const sn = slideNo(sp);
-        const rels = await readRels(entries, sn);
-        const xml = await entries[sp].text();
-        all.push(...extractTextShapes(xml, sn, rels)); // -> name, geom, text (with links)
-      }
-      if (!all.length) throw new Error("No text shapes found in the presentation.");
-
-      const best = pickByNameThenGeom(all, selNameNorm, target);
-      return best.text.trim();
-    }
-
-    // === B) TABLE (TSV with hyperlinks) ===
-    if (selectedTable) {
-      const target = toEMUBox({
-        left: +selectedTable.left,
-        top: +selectedTable.top,
-        width: +selectedTable.width,
-        height: +selectedTable.height,
-      });
-      const selNameNorm = normalize(String(selectedTable.name ?? ""));
-
-      const all: TableInfo[] = [];
-      for (const sp of slidePaths) {
-        const sn = slideNo(sp);
-        const rels = await readRels(entries, sn);
-        const xml = await entries[sp].text();
-        all.push(...extractTables(xml, sn, rels)); // -> name, geom, tsv (with links)
-      }
-      if (!all.length) throw new Error("No tables found in the presentation.");
-
-      const best = pickByNameThenGeom(all, selNameNorm, target);
-      return best.tsv;
-    }
-
-    // If we got here, the selection had no text or table content
-    if (!sel.isNullObject) {
-      sel.load("text"); await ctx.sync();
-      const t = sel.text?.trim();
-      if (t) return t; // last resort: plain highlighted text (no links)
-    }
-    throw new Error("Selected shape has no readable text or table content.");
-  });
-}
-
-/* =============================== Config =============================== */
-
-// Link output format inside cells / runs:
-type LinkOutput = "url" | "inline" | "excel" | "markdown";
-/** "url": just the href (your request) — default
- *  "inline": Text (https://url)
- *  "excel":  =HYPERLINK("https://url","Text")
- *  "markdown": [Text](https://url)
- */
-const LINK_OUTPUT: LinkOutput = "url";
-
-const EMU_PER_PT = 12700;
-const NAME_MISMATCH_PENALTY = 0.05;  // small push for exact name match when geometry ties
-const AMBIGUITY_MARGIN = 0.02;       // gap required between #1 and #2 when picking by geometry
-
-/* =============================== Types =============================== */
-
-type EMUBox = { x: number; y: number; cx: number; cy: number };
-
-type TextShapeInfo = {
-  slideNo: number;
-  name: string;
-  geom: EMUBox;
-  text: string; // hyperlink-preserved text
-};
-
-type TableInfo = {
-  slideNo: number;
-  name: string;
-  geom: EMUBox;
-  tsv: string; // TSV with hyperlinks preserved
-};
-
-/* =================== Slide .rels (r:id → URL) =================== */
-
-async function readRels(entries: Record<string, any>, sn: number): Promise<Map<string, string>> {
-  const relPath = `ppt/slides/_rels/slide${sn}.xml.rels`;
-  const map = new Map<string, string>();
-  if (!entries[relPath]) return map;
-
-  const xml = await entries[relPath].text();
-  const doc = new DOMParser().parseFromString(xml, "application/xml");
-  const rels = Array.from(
-    doc.getElementsByTagNameNS(
-      "http://schemas.openxmlformats.org/package/2006/relationships",
-      "Relationship"
-    )
-  );
-  for (const r of rels) {
-    const id = r.getAttribute("Id");
-    const type = r.getAttribute("Type") || "";
-    const target = r.getAttribute("Target");
-    if (id && target && /\/hyperlink$/.test(type)) map.set(id, target);
-  }
-  return map;
-}
-
-/* =================== TEXT shapes (preserve links) =================== */
-
 function extractTextShapes(xml: string, slideNo: number, rels: Map<string, string>): TextShapeInfo[] {
   const doc = new DOMParser().parseFromString(xml, "application/xml");
-  const shapes = Array.from(doc.getElementsByTagNameNS("*", "sp")); // any text-capable shape
-  const out: TextShapeInfo[] = [];
+  const spTree = Array.from(doc.getElementsByTagNameNS("*", "spTree"));
 
-  for (const sp of shapes) {
-    const nv = first(sp, "nvSpPr");
-    const cNvPr = nv && first(nv, "cNvPr");
-    const name = (cNvPr?.getAttribute("name") ?? "").toString();
+  const found: TextShapeInfo[] = [];
 
-    // shape-level link applies to entire shape
-    let shapeUrl: string | null = null;
-    const shpHL = cNvPr && first(cNvPr, "hlinkClick");
-    const shpRel =
-      shpHL?.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id") ||
-      shpHL?.getAttribute("r:id");
-    if (shpRel) shapeUrl = rels.get(shpRel) ?? null;
-
-    const xfrm = first(sp, "xfrm");
-    const off = xfrm && first(xfrm, "off");
-    const ext = xfrm && first(xfrm, "ext");
-    const txBody = first(sp, "txBody");
-    if (!off || !ext || !txBody) continue;
-
-    const geom: EMUBox = { x: num(off.getAttribute("x")), y: num(off.getAttribute("y")),
-                           cx: num(ext.getAttribute("cx")), cy: num(ext.getAttribute("cy")) };
-
-    const text = readTextBodyWithLinks(txBody, rels, shapeUrl);
-    if (text) out.push({ slideNo, name, geom, text });
+  for (const root of spTree) {
+    walkShapes(root, slideNo, rels, found);
   }
-  return out;
+  return found;
 }
 
-function readTextBodyWithLinks(txBody: Element, rels: Map<string, string>, shapeUrl: string | null): string {
-  const paras = Array.from(txBody.getElementsByTagNameNS("*", "p"));
-  const lines: string[] = [];
+/** Recursively walks shapes inside <p:spTree> or <p:grpSp> */
+function walkShapes(node: Element, slideNo: number, rels: Map<string, string>, out: TextShapeInfo[]) {
+  const children = Array.from(node.childNodes).filter(n => n.nodeType === Node.ELEMENT_NODE) as Element[];
 
-  for (const p of paras) {
-    // paragraph default link
-    let paraUrl: string | null = null;
-    const pPr = first(p, "pPr");
-    const defRPr = pPr && first(pPr, "defRPr");
-    const pHL = defRPr && first(defRPr, "hlinkClick");
-    const pRel =
-      pHL?.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id") ||
-      pHL?.getAttribute("r:id");
-    if (pRel) paraUrl = rels.get(pRel) ?? null;
+  for (const el of children) {
+    const tag = el.localName;
 
-    const runs = Array.from(p.getElementsByTagNameNS("*", "r"));
-    if (runs.length) {
-      const parts: string[] = [];
-      for (const r of runs) {
-        const rPr = first(r, "rPr");
-        let url: string | null = null;
-        const rHL = rPr && first(rPr, "hlinkClick");
-        const rRel =
-          rHL?.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id") ||
-          rHL?.getAttribute("r:id");
-        if (rRel) url = rels.get(rRel) ?? null;
-        if (!url) url = paraUrl || shapeUrl;
+    if (tag === "sp") {
+      const txBody = first(el, "txBody");
+      if (!txBody) continue;
 
-        const tNodes = Array.from(r.getElementsByTagNameNS("*", "t"));
-        let txt = tNodes.map((t) => t.textContent ?? "").join("");
-        if (Array.from(r.getElementsByTagNameNS("*", "br")).length > 0) txt = txt.replace(/\s{2,}/g, "\n");
-        txt = txt.trim();
-        if (!txt) continue;
+      const nvSpPr = first(el, "nvSpPr");
+      const cNvPr = nvSpPr && first(nvSpPr, "cNvPr");
+      const name = (cNvPr?.getAttribute("name") ?? "").toString();
 
-        parts.push(url ? formatLinked(txt, url) : txt);
+      const xfrm = first(el, "xfrm");
+      const off = xfrm && first(xfrm, "off");
+      const ext = xfrm && first(xfrm, "ext");
+      if (!off || !ext) continue;
+
+      const geom: EMUBox = {
+        x: num(off.getAttribute("x")),
+        y: num(off.getAttribute("y")),
+        cx: num(ext.getAttribute("cx")),
+        cy: num(ext.getAttribute("cy")),
+      };
+
+      // Whole-shape hyperlink
+      let shapeUrl: string | null = null;
+      const shpHL = cNvPr && first(cNvPr, "hlinkClick");
+      const shpRel =
+        shpHL?.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id") ||
+        shpHL?.getAttribute("r:id");
+      if (shpRel) shapeUrl = rels.get(shpRel) ?? null;
+
+      const text = readTextBodyWithLinks(txBody, rels, shapeUrl);
+      if (text.trim()) out.push({ slideNo, name, geom, text });
+    }
+
+    // If this is a group, recurse deeper
+    if (tag === "grpSp") {
+      const nestedTree = first(el, "spTree");
+      if (nestedTree) {
+        walkShapes(nestedTree, slideNo, rels, out);
       }
-      lines.push(parts.join(" ").replace(/\s{2,}/g, " ").trim());
-    } else {
-      // no runs → fallback walker
-      const walker = txBody.ownerDocument!.createTreeWalker(p, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
-      let txt = "";
-      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-        if (n.nodeType === Node.ELEMENT_NODE) {
-          const el = n as Element;
-          if (el.localName === "t") txt += el.textContent ?? "";
-          else if (el.localName === "br") txt += "\n";
-        }
-      }
-      lines.push(txt.replace(/\s+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim());
     }
-  }
-  return lines.filter((l) => l && l.trim()).join("\n");
-}
-
-/* =================== TABLES (preserve links) =================== */
-
-function extractTables(xml: string, slideNo: number, rels: Map<string, string>): TableInfo[] {
-  const doc = new DOMParser().parseFromString(xml, "application/xml");
-  const frames = Array.from(doc.getElementsByTagNameNS("*", "graphicFrame"));
-  const out: TableInfo[] = [];
-
-  for (const gf of frames) {
-    const nv = first(gf, "nvGraphicFramePr");
-    const cNvPr = nv && first(nv, "cNvPr");
-    const name = (cNvPr?.getAttribute("name") ?? "").toString();
-
-    // shape-level link applies to whole table
-    let shapeUrl: string | null = null;
-    const shpHL = cNvPr && first(cNvPr, "hlinkClick");
-    const shpRel =
-      shpHL?.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id") ||
-      shpHL?.getAttribute("r:id");
-    if (shpRel) shapeUrl = rels.get(shpRel) ?? null;
-
-    const xfrm = first(gf, "xfrm");
-    const off = xfrm && first(xfrm, "off");
-    const ext = xfrm && first(xfrm, "ext");
-    const graphic = first(gf, "graphic");
-    const gData = graphic && first(graphic, "graphicData");
-    const tbl = gData && first(gData, "tbl");
-    if (!off || !ext || !tbl) continue;
-
-    const geom: EMUBox = { x: num(off.getAttribute("x")), y: num(off.getAttribute("y")),
-                           cx: num(ext.getAttribute("cx")), cy: num(ext.getAttribute("cy")) };
-    const tsv = tableToTSVWithLinks(tbl, rels, shapeUrl);
-    out.push({ slideNo, name, geom, tsv });
-  }
-  return out;
-}
-
-function tableToTSVWithLinks(tblEl: Element, rels: Map<string, string>, shapeUrl: string | null): string {
-  const rows = Array.from(tblEl.getElementsByTagNameNS("*", "tr"));
-  const lines: string[] = [];
-  for (const tr of rows) {
-    const cells = Array.from(tr.getElementsByTagNameNS("*", "tc"));
-    const vals = cells.map((tc) => cellTextWithLinks(tc, rels, shapeUrl));
-    let end = vals.length;
-    while (end > 0 && (!vals[end - 1] || !vals[end - 1].trim())) end--;
-    lines.push(vals.slice(0, end).join("\t"));
-  }
-  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
-  return lines.join("\n");
-}
-
-function cellTextWithLinks(tc: Element, rels: Map<string, string>, shapeUrl: string | null): string {
-  const paras = Array.from(tc.getElementsByTagNameNS("*", "p"));
-  const outLines: string[] = [];
-  for (const p of paras) {
-    let paraUrl: string | null = null;
-    const pPr = first(p, "pPr");
-    const defRPr = pPr && first(pPr, "defRPr");
-    const pHL = defRPr && first(defRPr, "hlinkClick");
-    const pRel =
-      pHL?.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id") ||
-      pHL?.getAttribute("r:id");
-    if (pRel) paraUrl = rels.get(pRel) ?? null;
-
-    const runs = Array.from(p.getElementsByTagNameNS("*", "r"));
-    const parts: string[] = [];
-    for (const r of runs) {
-      const rPr = first(r, "rPr");
-      let url: string | null = null;
-      const rHL = rPr && first(rPr, "hlinkClick");
-      const rRel =
-        rHL?.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id") ||
-        rHL?.getAttribute("r:id");
-      if (rRel) url = rels.get(rRel) ?? null;
-      if (!url) url = paraUrl || shapeUrl;
-
-      const tNodes = Array.from(r.getElementsByTagNameNS("*", "t"));
-      let txt = tNodes.map((t) => t.textContent ?? "").join("");
-      if (Array.from(r.getElementsByTagNameNS("*", "br")).length > 0) txt = txt.replace(/\s{2,}/g, "\n");
-      txt = txt.trim();
-      if (!txt) continue;
-
-      parts.push(url ? formatLinked(txt, url) : txt);
-    }
-    if (parts.length) outLines.push(parts.join(" ").replace(/\s{2,}/g, " ").trim());
-  }
-  return outLines.join("\n").trim();
-}
-
-/* =================== Picking logic (Name → Geometry) =================== */
-
-/** Prefer exact name match; if multiple or none, use geometry + small name penalty. */
-function pickByNameThenGeom<T extends { name: string; geom: EMUBox }>(
-  items: T[],
-  selectedNameNorm: string,
-  target: EMUBox
-): T {
-  const exact = items.filter((it) => normalize(it.name) === selectedNameNorm);
-  if (exact.length === 1) return exact[0];
-  if (exact.length > 1) {
-    // break tie among same-named shapes by geometry distance
-    exact.sort((a, b) => geomScore(target, a.geom) - geomScore(target, b.geom));
-    // ensure difference is meaningful
-    if (exact.length === 1 || geomScore(target, exact[0].geom) + AMBIGUITY_MARGIN < geomScore(target, exact[1].geom))
-      return exact[0];
-    throw new Error("Ambiguous selection: multiple shapes share the same name and geometry.");
-  }
-
-  // Fallback: rank everyone by geometry + small name penalty
-  const ranked = items
-    .map((t) => ({
-      item: t,
-      final: geomScore(target, t.geom) + NAME_MISMATCH_PENALTY,
-    }))
-    .sort((a, b) => a.final - b.final);
-
-  if (ranked.length > 1 && ranked[0].final + AMBIGUITY_MARGIN >= ranked[1].final) {
-    throw new Error("Ambiguous selection: multiple shapes look identical. Nudge/resize or rename, then try again.");
-  }
-  return ranked[0].item;
-}
-
-function geomScore(a: EMUBox, b: EMUBox): number {
-  const dx = Math.abs(a.x - b.x) / (b.cx || 1);
-  const dy = Math.abs(a.y - b.y) / (b.cy || 1);
-  const dw = Math.abs(a.cx - b.cx) / (b.cx || 1);
-  const dh = Math.abs(a.cy - b.cy) / (b.cy || 1);
-  return (dx + dy + dw + dh) / 4;
-}
-
-/* =================== Office file (ZIP) =================== */
-
-async function getCompressedFile(): Promise<ArrayBuffer> {
-  const file = await new Promise<Office.File>((resolve, reject) => {
-    Office.context.document.getFileAsync(Office.FileType.Compressed, (res) => {
-      if (res.status === Office.AsyncResultStatus.Succeeded) resolve(res.value);
-      else reject(new Error(`getFileAsync failed: ${res.error?.message || res.error}`));
-    });
-  });
-  try {
-    const parts: Uint8Array[] = [];
-    for (let i = 0; i < file.sliceCount; i++) {
-      const r = await new Promise<Office.AsyncResult<Office.Slice>>((resolve, reject) => {
-        file.getSliceAsync(i, (s) =>
-          s.status === Office.AsyncResultStatus.Succeeded
-            ? resolve(s)
-            : reject(new Error(`getSliceAsync(${i}) failed: ${s.error?.message || s.error}`))
-        );
-      });
-      parts.push(new Uint8Array(r.value.data as number[]));
-    }
-    const total = parts.reduce((s, u) => s + u.length, 0);
-    const buf = new Uint8Array(total);
-    let off = 0;
-    for (const u of parts) {
-      buf.set(u, off);
-      off += u.length;
-    }
-    return buf.buffer;
-  } finally {
-    file.closeAsync(() => void 0);
-  }
-}
-
-/* =================== Tiny utils =================== */
-
-function first(parent: Element, local: string): Element | null {
-  for (let i = 0; i < parent.childNodes.length; i++) {
-    const n = parent.childNodes[i];
-    if (n.nodeType === Node.ELEMENT_NODE && (n as Element).localName === local) {
-      return n as Element;
-    }
-  }
-  return null;
-}
-function toEMUBox(pts: { left: number; top: number; width: number; height: number }): EMUBox {
-  return {
-    x: Math.round(pts.left * EMU_PER_PT),
-    y: Math.round(pts.top * EMU_PER_PT),
-    cx: Math.round(pts.width * EMU_PER_PT),
-    cy: Math.round(pts.height * EMU_PER_PT),
-  };
-}
-const slideNo = (p: string) => parseInt(p.match(/slide(\d+)\.xml/)![1], 10);
-const normalize = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
-const num = (v: any) => (Number.isFinite(+v) ? +v : 0);
-
-/** Format a linked fragment according to LINK_OUTPUT */
-function formatLinked(text: string, url: string): string {
-  switch (LINK_OUTPUT) {
-    case "excel":
-      return `=HYPERLINK("${url.replace(/"/g, '""')}","${text.replace(/"/g, '""')}")`;
-    case "markdown":
-      return `[${text}](${url})`;
-    case "inline":
-      return `${text} (${url})`;
-    case "url":
-    default:
-      return url; // href only
   }
 }
