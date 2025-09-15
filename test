@@ -1,55 +1,45 @@
-// Gets selected text if any; otherwise the text contained in the selected shape(s).
-// Handles: text boxes/placeholders, tables (entire table), and groups (recursively).
+// Read the user's selection from PowerPoint:
+// 1) If there's active text selection -> return it.
+// 2) Else return concatenated text from selected shape(s):
+//    - text boxes/placeholders (via TextFrame)
+//    - tables (via getTable() + cells text)
+//    - groups (recursively)
+//
+// NOTE: uses `any` for members some typings don't expose (Table, group).
 export async function getPptSelectedTextOrShape(): Promise<string> {
   return PowerPoint.run(async (ctx) => {
     const log = (...a: any[]) => console.log("[getPptSelectedTextOrShape]", ...a);
-    const pres = ctx.presentation;
 
-    // 1) Prefer an active text selection (this also works when a table cell's text is selected)
-    const sel = pres.getSelectedTextRangeOrNullObject();
+    // -------- 1) Prefer active text selection --------
+    const sel = ctx.presentation.getSelectedTextRangeOrNullObject();
     await ctx.sync();
     if (!sel.isNullObject) {
       sel.load("text");
       await ctx.sync();
       const t = (sel.text ?? "").trim();
-      log("Active text selection found. Length:", t.length);
+      log("Active text selection found. length =", t.length);
       return t;
     }
     log("No active text selection.");
 
-    // 2) Otherwise, get currently selected shapes
-    const selected = pres.getSelectedShapes();
-    selected.load("items");
-    await ctx.sync();
-
-    if (selected.items.length === 0) {
-      log("No shapes selected.");
-      return "";
-    }
-
-    // Load the minimal info we need on each selected shape
-    selected.items.forEach((s: any) =>
-      s.load("type,textFrame/hasText,textFrame/textRange/text")
-    );
-    await ctx.sync();
-    log(`Selected shapes: ${selected.items.length}`);
-
     const parts: string[] = [];
 
-    // --- helpers -------------------------------------------------------------
+    // ---------- helpers ----------
+    const join2D = (vals: string[][]) =>
+      vals.map(r => r.join("\t")).join("\n").trim();
 
-    // Read a table to plain text (tab-delimited rows)
-    const readTableFromShape = async (shape: any) => {
+    // Read a *table shape* to plain text (tab-delimited, newline per row)
+    const tableToText = async (shape: any, where: string) => {
       try {
-        const table = shape.getTable(); // only valid when shape.type === table
+        const table = shape.getTable(); // throws if it's not a table
         table.load("rowCount,columnCount");
         await ctx.sync();
 
         const rows = Number(table.rowCount) || 0;
         const cols = Number(table.columnCount) || 0;
-        log("Table detected. Size:", rows, "x", cols);
+        log(`${where}: table detected ${rows}x${cols}`);
 
-        // Queue loads for every cell in one go
+        // Load all cells in a single round-trip
         const cells: { r: number; c: number; cell: any }[] = [];
         for (let r = 0; r < rows; r++) {
           for (let c = 0; c < cols; c++) {
@@ -60,65 +50,78 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
         }
         await ctx.sync();
 
-        // Build a 2D grid of strings
-        const lines: string[] = [];
-        for (let r = 0; r < rows; r++) {
-          const rowVals: string[] = [];
-          for (let c = 0; c < cols; c++) {
-            const { cell } = cells[r * cols + c];
-            rowVals.push(!cell.isNullObject && typeof cell.text === "string" ? cell.text : "");
-          }
-          lines.push(rowVals.join("\t"));
+        const grid: string[][] = Array.from({ length: rows }, () => Array(cols).fill(""));
+        for (const { r, c, cell } of cells) {
+          grid[r][c] = !cell.isNullObject && typeof cell.text === "string" ? cell.text : "";
         }
-        const text = lines.join("\n").trim();
-        log("Table text length:", text.length);
+        const text = join2D(grid);
+        log(`${where}: table text length =`, text.length);
         if (text) parts.push(text);
       } catch (err) {
-        log("Error while reading table:", err);
+        log(`${where}: getTable() failed`, err);
       }
     };
 
-    // Recursively collect text from a ShapeScopedCollection (handles nested groups)
-    const collectFromShapes = async (scoped: any) => {
-      // For nested groups we need to load again
-      if (scoped !== selected) {
-        scoped.load("items");
-        await ctx.sync();
-        scoped.items.forEach((s: any) =>
-          s.load("type,textFrame/hasText,textFrame/textRange/text")
-        );
-        await ctx.sync();
-      }
+    // Walk a ShapeScopedCollection (handles nested groups)
+    const walk = async (shapes: any, path: string) => {
+      shapes.load("items");
+      await ctx.sync();
+      log(`${path}: count =`, shapes.items.length);
+      if (shapes.items.length === 0) return;
 
-      for (const s of scoped.items) {
-        log("Visiting shape. type enum value:", s.type);
+      // Load type + textframe metadata for this batch
+      shapes.items.forEach((s: any) =>
+        s.load("type,name,textFrame/hasText,textFrame/textRange/text")
+      );
+      await ctx.sync();
 
-        // Text-bearing shapes
+      let idx = 0;
+      const groups: any[] = [];
+      const tables: { shape: any; where: string }[] = [];
+
+      for (const s of shapes.items) {
+        const where = `${path}[${idx}]`;
+        log(`${where}: type =`, s.type, "name =", s.name ?? "");
+
+        // 1) Any textFrame text?
         if (s.textFrame?.hasText && s.textFrame?.textRange?.text) {
           const t = String(s.textFrame.textRange.text).trim();
-          log("TextFrame found. Length:", t.length);
+          log(`${where}: textFrame length =`, t.length);
           if (t) parts.push(t);
         }
 
-        // Tables
-        if (s.type === PowerPoint.ShapeType.table) {
-          log("ShapeType.table matched.");
-          await readTableFromShape(s);
+        // 2) Table: don’t rely only on type — try getTable() guarded
+        if (s.type === PowerPoint.ShapeType.table || typeof (s as any).getTable === "function") {
+          tables.push({ shape: s, where });
         }
 
-        // Groups
+        // 3) Group: recurse
         const inner = (s as any).group?.shapes;
         if (inner) {
-          log("Descending into group...");
-          await collectFromShapes(inner);
+          log(`${where}: group -> descending`);
+          groups.push({ inner, where: where + ".group" });
         }
+
+        idx++;
+      }
+
+      // Read any tables found in this batch
+      for (const t of tables) {
+        await tableToText(t.shape, t.where);
+      }
+
+      // Recurse into groups
+      for (const g of groups) {
+        await walk(g.inner, g.where);
       }
     };
 
-    await collectFromShapes(selected);
+    // Start from currently selected shapes
+    const selected = ctx.presentation.getSelectedShapes();
+    await walk(selected, "selected");
 
     const result = parts.join("\n\n");
-    log("Final concatenated text length:", result.length);
+    log("DONE. Final text length =", result.length);
     return result;
   });
 }
