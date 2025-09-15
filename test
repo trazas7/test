@@ -1,10 +1,11 @@
-// Returns the user's highlighted text if any; otherwise the text content of the
-// selected shape(s). Safe for older typings (uses `any` only where needed).
+// Gets the user's selected text if any; otherwise the text content of the selected shape(s)
+// (text boxes/placeholders/tables/groups). Works with older typings by using `any`
+// only for members that some d.ts files don’t declare yet (Table, Group).
 export async function getPptSelectedTextOrShape(): Promise<string> {
   return PowerPoint.run(async (ctx) => {
     const pres = ctx.presentation;
 
-    // 1) Prefer an active text selection (works inside table cells too)
+    // ---- 1) Prefer an active text selection (also works in table cells) ----
     const sel = pres.getSelectedTextRangeOrNullObject();
     await ctx.sync();
     if (!sel.isNullObject) {
@@ -13,25 +14,25 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
       return (sel.text ?? "").trim();
     }
 
-    // 2) Otherwise, read the selected shape(s)
+    // ---- 2) Otherwise read from the selected shape(s) ----
     const selected = pres.getSelectedShapes();
-    selected.load("items/type");
+    // Load the minimal info we need up front (type + textFrame bits).
+    selected.load("items");
+    await ctx.sync();
+    // Load each shape’s type and text info in one round-trip.
+    selected.items.forEach(s =>
+      s.load("type,textFrame/hasText,textFrame/textRange/text")
+    );
     await ctx.sync();
     if (selected.items.length === 0) return "";
 
     const parts: string[] = [];
 
-    // ---- helpers ----
-    const isTableShape = (s: any) =>
-      typeof s?.getTable === "function" ||
-      String(s?.type ?? "").toLowerCase() === "table";
-
-    const getGroupShapesOrNull = (s: any) => s?.group?.shapes ?? null;
-
+    // Helper: join a 2D array into lines/tabs.
     const join2D = (vals: any[][]) =>
       vals.map(row => row.map(v => v ?? "").join("\t")).join("\n").trim();
 
-    // Read a table to text: prefer table.values; fallback to cell-by-cell
+    // Helper: read all text from a Table. Uses fast .values, falls back to cells.
     const tableToText = async (tbl: any): Promise<string> => {
       tbl.load("values,rowCount,columnCount");
       await ctx.sync();
@@ -40,71 +41,72 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
         return join2D(tbl.values);
       }
 
-      // Fallback: load each cell's text in one sync
-      const cells: any[] = [];
       const rows = Number(tbl.rowCount) || 0;
       const cols = Number(tbl.columnCount) || 0;
+      const loadedCells: { r: number; c: number; cell: any }[] = [];
 
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
           const cell = tbl.getCellOrNullObject(r, c);
-          cell.load("text");
-          cells.push({ r, c, cell });
+          cell.load("text,isNullObject");
+          loadedCells.push({ r, c, cell });
         }
       }
       await ctx.sync();
 
       const grid: string[][] = Array.from({ length: rows }, () => Array(cols).fill(""));
-      for (const { r, c, cell } of cells) grid[r][c] = cell.text ?? "";
+      for (const { r, c, cell } of loadedCells) {
+        grid[r][c] = !cell.isNullObject ? (cell.text ?? "") : "";
+      }
       return join2D(grid);
     };
 
-    // Recursively collect text from shapes
-    const collect = async (scoped: any): Promise<void> => {
-      scoped.load("items/type");
-      await ctx.sync();
-
-      const textFrames: any[] = [];
-      const tables: any[] = [];
-      const toRecurse: any[] = [];
-
-      for (const s of scoped.items) {
-        if (isTableShape(s)) {
-          const tbl = (s as any).getTable();
-          tables.push(tbl);
-        }
-
-        if (typeof (s as any).getTextFrameOrNullObject === "function") {
-          const tf = (s as any).getTextFrameOrNullObject();
-          tf.load("hasText,textRange/text");
-          textFrames.push(tf);
-        }
-
-        const inner = getGroupShapesOrNull(s);
-        if (inner) toRecurse.push(inner);
+    // Recursive collector (handles groups)
+    const collectFromShapes = async (shapes: any): Promise<void> => {
+      // We already loaded type/text for top-level; for nested groups we need to load again.
+      if (shapes !== selected) {
+        shapes.load("items");
+        await ctx.sync();
+        shapes.items.forEach((s: any) =>
+          s.load("type,textFrame/hasText,textFrame/textRange/text")
+        );
+        await ctx.sync();
       }
 
-      await ctx.sync();
+      const nextGroups: any[] = [];
+      const tables: any[] = [];
 
-      for (const tf of textFrames) {
-        if (!tf.isNullObject && tf.hasText && tf.textRange?.text) {
-          const t = String(tf.textRange.text).trim();
+      for (const s of shapes.items) {
+        // Text-bearing shapes
+        if (s.textFrame?.hasText && s.textFrame?.textRange?.text) {
+          const t = String(s.textFrame.textRange.text).trim();
           if (t) parts.push(t);
         }
+
+        // Tables (works even if s.type might be 'Unsupported' on some builds)
+        if (typeof (s as any).getTable === "function" ||
+            String(s.type ?? "").toLowerCase() === "table") {
+          tables.push((s as any).getTable());
+        }
+
+        // Groups
+        const inner = (s as any).group?.shapes;
+        if (inner) nextGroups.push(inner);
       }
 
+      // Read all tables found at this level.
       for (const tbl of tables) {
         const t = (await tableToText(tbl)).trim();
         if (t) parts.push(t);
       }
 
-      for (const inner of toRecurse) {
-        await collect(inner);
+      // Recurse into groups
+      for (const g of nextGroups) {
+        await collectFromShapes(g);
       }
     };
 
-    await collect(selected);
-
+    await collectFromShapes(selected);
     return parts.join("\n\n");
   });
 }
