@@ -1,11 +1,10 @@
-// Works with older typings: avoids PowerPoint.Table type and shape.group typing.
-// Returns the user's highlighted text if any; otherwise the text content
-// from the selected shape(s) (text boxes, placeholders, tables, and groups).
+// Returns the user's highlighted text if any; otherwise the text content of the
+// selected shape(s). Safe for older typings (uses `any` only where needed).
 export async function getPptSelectedTextOrShape(): Promise<string> {
   return PowerPoint.run(async (ctx) => {
     const pres = ctx.presentation;
 
-    // 1) If there's an active text selection, prefer that.
+    // 1) Prefer an active text selection (works inside table cells too)
     const sel = pres.getSelectedTextRangeOrNullObject();
     await ctx.sync();
     if (!sel.isNullObject) {
@@ -14,7 +13,7 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
       return (sel.text ?? "").trim();
     }
 
-    // 2) Otherwise, get text from the selected shapes.
+    // 2) Otherwise, read the selected shape(s)
     const selected = pres.getSelectedShapes();
     selected.load("items/type");
     await ctx.sync();
@@ -22,31 +21,67 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
 
     const parts: string[] = [];
 
-    // Recursively collect text from shapes. `any` is intentional to appease typings.
+    // ---- helpers ----
+    const isTableShape = (s: any) =>
+      typeof s?.getTable === "function" ||
+      String(s?.type ?? "").toLowerCase() === "table";
+
+    const getGroupShapesOrNull = (s: any) => s?.group?.shapes ?? null;
+
+    const join2D = (vals: any[][]) =>
+      vals.map(row => row.map(v => v ?? "").join("\t")).join("\n").trim();
+
+    // Read a table to text: prefer table.values; fallback to cell-by-cell
+    const tableToText = async (tbl: any): Promise<string> => {
+      tbl.load("values,rowCount,columnCount");
+      await ctx.sync();
+
+      if (Array.isArray(tbl.values)) {
+        return join2D(tbl.values);
+      }
+
+      // Fallback: load each cell's text in one sync
+      const cells: any[] = [];
+      const rows = Number(tbl.rowCount) || 0;
+      const cols = Number(tbl.columnCount) || 0;
+
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const cell = tbl.getCellOrNullObject(r, c);
+          cell.load("text");
+          cells.push({ r, c, cell });
+        }
+      }
+      await ctx.sync();
+
+      const grid: string[][] = Array.from({ length: rows }, () => Array(cols).fill(""));
+      for (const { r, c, cell } of cells) grid[r][c] = cell.text ?? "";
+      return join2D(grid);
+    };
+
+    // Recursively collect text from shapes
     const collect = async (scoped: any): Promise<void> => {
       scoped.load("items/type");
       await ctx.sync();
 
       const textFrames: any[] = [];
       const tables: any[] = [];
-      const groups: any[] = [];
+      const toRecurse: any[] = [];
 
       for (const s of scoped.items) {
-        // Table
-        if (s.type === PowerPoint.ShapeType.table && (s as any).getTable) {
-          const t = (s as any).getTable();
-          t.load("values");
-          tables.push(t);
+        if (isTableShape(s)) {
+          const tbl = (s as any).getTable();
+          tables.push(tbl);
         }
-        // Text-bearing shapes
-        if ((s as any).getTextFrameOrNullObject) {
+
+        if (typeof (s as any).getTextFrameOrNullObject === "function") {
           const tf = (s as any).getTextFrameOrNullObject();
           tf.load("hasText,textRange/text");
           textFrames.push(tf);
         }
-        // Groups (typings may not expose `.group`, so use `any`)
-        const g = (s as any).group;
-        if (g?.shapes) groups.push(g.shapes);
+
+        const inner = getGroupShapesOrNull(s);
+        if (inner) toRecurse.push(inner);
       }
 
       await ctx.sync();
@@ -58,15 +93,12 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
         }
       }
 
-      for (const t of tables) {
-        const vals: any[][] = t.values;
-        if (Array.isArray(vals)) {
-          const txt = vals.map(row => row.join("\t")).join("\n").trim();
-          if (txt) parts.push(txt);
-        }
+      for (const tbl of tables) {
+        const t = (await tableToText(tbl)).trim();
+        if (t) parts.push(t);
       }
 
-      for (const inner of groups) {
+      for (const inner of toRecurse) {
         await collect(inner);
       }
     };
