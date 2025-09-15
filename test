@@ -1,105 +1,77 @@
-/** Returns selected text if any; otherwise the textual content of the selected shape(s).
- *  - Handles TextBox, Placeholder, and any shape with a TextFrame
- *  - Handles Table shapes by reading all cell values
- *  - Handles Group shapes by walking nested shapes
- */
+// Works with older typings: avoids PowerPoint.Table type and shape.group typing.
+// Returns the user's highlighted text if any; otherwise the text content
+// from the selected shape(s) (text boxes, placeholders, tables, and groups).
 export async function getPptSelectedTextOrShape(): Promise<string> {
-  return PowerPoint.run(async (context) => {
-    const pres = context.presentation;
+  return PowerPoint.run(async (ctx) => {
+    const pres = ctx.presentation;
 
-    // 1) If the user has a text selection (works inside table cells too), return it.
-    const selectedText = pres.getSelectedTextRangeOrNullObject();
-    await context.sync();
-    if (!selectedText.isNullObject) {
-      selectedText.load("text");
-      await context.sync();
-      return (selectedText.text ?? "").trim();
+    // 1) If there's an active text selection, prefer that.
+    const sel = pres.getSelectedTextRangeOrNullObject();
+    await ctx.sync();
+    if (!sel.isNullObject) {
+      sel.load("text");
+      await ctx.sync();
+      return (sel.text ?? "").trim();
     }
 
-    // 2) Otherwise, read the selected shape(s)
-    const selectedShapes = pres.getSelectedShapes();
-    selectedShapes.load("items/type,id,name");
-    await context.sync();
-    if (selectedShapes.items.length === 0) return "";
+    // 2) Otherwise, get text from the selected shapes.
+    const selected = pres.getSelectedShapes();
+    selected.load("items/type");
+    await ctx.sync();
+    if (selected.items.length === 0) return "";
 
     const parts: string[] = [];
 
-    // Walk a ShapeScopedCollection and collect text from any supported content.
-    async function collectFromShapes(scoped: PowerPoint.ShapeScopedCollection) {
-      scoped.load("items/type,id,name");
-      await context.sync();
+    // Recursively collect text from shapes. `any` is intentional to appease typings.
+    const collect = async (scoped: any): Promise<void> => {
+      scoped.load("items/type");
+      await ctx.sync();
 
-      // Stage 1: queue loads for text frames and tables; recurse into groups.
-      const frames: PowerPoint.TextFrame[] = [];
-      const tables: PowerPoint.Table[] = [];
-      const toRecurse: PowerPoint.ShapeScopedCollection[] = [];
+      const textFrames: any[] = [];
+      const tables: any[] = [];
+      const groups: any[] = [];
 
-      for (const shape of scoped.items) {
-        if (shape.type === PowerPoint.ShapeType.group) {
-          // Recurse into grouped shapes
-          const inner = shape.group.shapes;
-          toRecurse.push(inner);
-        } else if (shape.type === PowerPoint.ShapeType.table) {
-          const table = shape.getTable();
-          table.load("values,rowCount,columnCount");
-          tables.push(table);
-        } else {
-          // Safe way to access text if the shape supports it
-          const tf = shape.getTextFrameOrNullObject();
+      for (const s of scoped.items) {
+        // Table
+        if (s.type === PowerPoint.ShapeType.table && (s as any).getTable) {
+          const t = (s as any).getTable();
+          t.load("values");
+          tables.push(t);
+        }
+        // Text-bearing shapes
+        if ((s as any).getTextFrameOrNullObject) {
+          const tf = (s as any).getTextFrameOrNullObject();
           tf.load("hasText,textRange/text");
-          frames.push(tf);
+          textFrames.push(tf);
         }
+        // Groups (typings may not expose `.group`, so use `any`)
+        const g = (s as any).group;
+        if (g?.shapes) groups.push(g.shapes);
       }
-      await context.sync();
 
-      // Stage 2: harvest text frames
-      for (const tf of frames) {
-        if (!tf.isNullObject && tf.hasText && tf.textRange && typeof tf.textRange.text === "string") {
-          const t = (tf.textRange.text || "").trim();
+      await ctx.sync();
+
+      for (const tf of textFrames) {
+        if (!tf.isNullObject && tf.hasText && tf.textRange?.text) {
+          const t = String(tf.textRange.text).trim();
           if (t) parts.push(t);
         }
       }
 
-      // Stage 3: harvest tables (use the fast .values 2D array)
-      for (const tbl of tables) {
-        if (Array.isArray(tbl.values)) {
-          const t = tbl.values.map(row => row.join("\t")).join("\n").trim();
-          if (t) parts.push(t);
-        } else {
-          // Fallback: if values not loaded for any reason, read cell-by-cell
-          if (typeof tbl.rowCount === "number" && typeof tbl.columnCount === "number") {
-            const cellTexts: string[] = [];
-            for (let r = 0; r < tbl.rowCount; r++) {
-              const rowVals: string[] = [];
-              for (let c = 0; c < tbl.columnCount; c++) {
-                const cell = tbl.getCellOrNullObject(r, c);
-                cell.load("text");
-                // Note: we intentionally don't sync inside the loop.
-              }
-            }
-            await context.sync();
-            for (let r = 0; r < tbl.rowCount; r++) {
-              const rowVals: string[] = [];
-              for (let c = 0; c < tbl.columnCount; c++) {
-                const cell = tbl.getCellOrNullObject(r, c);
-                // cell.text is loaded from the previous sync
-                rowVals.push(cell.text ?? "");
-              }
-              cellTexts.push(rowVals.join("\t"));
-            }
-            const t = cellTexts.join("\n").trim();
-            if (t) parts.push(t);
-          }
+      for (const t of tables) {
+        const vals: any[][] = t.values;
+        if (Array.isArray(vals)) {
+          const txt = vals.map(row => row.join("\t")).join("\n").trim();
+          if (txt) parts.push(txt);
         }
       }
 
-      // Stage 4: recurse into any groups discovered
-      for (const inner of toRecurse) {
-        await collectFromShapes(inner);
+      for (const inner of groups) {
+        await collect(inner);
       }
-    }
+    };
 
-    await collectFromShapes(selectedShapes);
+    await collect(selected);
 
     return parts.join("\n\n");
   });
