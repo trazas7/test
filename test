@@ -1,50 +1,40 @@
-/** Returns selected text if any; otherwise the textual content of the selected shape(s).
- *  - Handles TextBox, Placeholder, and any shape with a TextFrame
- *  - Handles Table shapes by reading all cell values
- *  - Handles Group shapes by walking nested shapes
+/**
+ * Returns selected text if any; otherwise the textual content of the selected shapes;
+ * otherwise the entire presentation's textual content (all slides, tables, and groups).
  */
-export async function getPptSelectedTextOrShape(): Promise<string> {
+export async function getSelectedTextOrWholeDeck(): Promise<string> {
   return PowerPoint.run(async (context) => {
     const pres = context.presentation;
 
-    // 1) If the user has a text selection (works inside table cells too), return it.
+    // 1) If user has a text selection, return it
     const selectedText = pres.getSelectedTextRangeOrNullObject();
     await context.sync();
     if (!selectedText.isNullObject) {
       selectedText.load("text");
       await context.sync();
-      return (selectedText.text ?? "").trim();
+      const t = (selectedText.text ?? "").trim();
+      if (t) return t;
     }
-
-    // 2) Otherwise, read the selected shape(s)
-    const selectedShapes = pres.getSelectedShapes();
-    selectedShapes.load("items/type,id,name");
-    await context.sync();
-    if (selectedShapes.items.length === 0) return "";
 
     const parts: string[] = [];
 
-    // Walk a ShapeScopedCollection and collect text from any supported content.
-    async function collectFromShapes(scoped: PowerPoint.ShapeScopedCollection) {
-      scoped.load("items/type,id,name");
+    // Helper: walk shapes (handles groups, tables, and text frames)
+    const walkShapes = async (scoped: PowerPoint.ShapeScopedCollection) => {
+      scoped.load("items/type");
       await context.sync();
 
-      // Stage 1: queue loads for text frames and tables; recurse into groups.
       const frames: PowerPoint.TextFrame[] = [];
       const tables: PowerPoint.Table[] = [];
       const toRecurse: PowerPoint.ShapeScopedCollection[] = [];
 
       for (const shape of scoped.items) {
         if (shape.type === PowerPoint.ShapeType.group) {
-          // Recurse into grouped shapes
-          const inner = shape.group.shapes;
-          toRecurse.push(inner);
+          toRecurse.push(shape.group.shapes);
         } else if (shape.type === PowerPoint.ShapeType.table) {
           const table = shape.getTable();
           table.load("values,rowCount,columnCount");
           tables.push(table);
         } else {
-          // Safe way to access text if the shape supports it
           const tf = shape.getTextFrameOrNullObject();
           tf.load("hasText,textRange/text");
           frames.push(tf);
@@ -52,7 +42,7 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
       }
       await context.sync();
 
-      // Stage 2: harvest text frames
+      // text frames
       for (const tf of frames) {
         if (!tf.isNullObject && tf.hasText && tf.textRange && typeof tf.textRange.text === "string") {
           const t = (tf.textRange.text || "").trim();
@@ -60,46 +50,45 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
         }
       }
 
-      // Stage 3: harvest tables (use the fast .values 2D array)
-      for (const tbl of tables) {
-        if (Array.isArray(tbl.values)) {
-          const t = tbl.values.map(row => row.join("\t")).join("\n").trim();
-          if (t) parts.push(t);
-        } else {
-          // Fallback: if values not loaded for any reason, read cell-by-cell
-          if (typeof tbl.rowCount === "number" && typeof tbl.columnCount === "number") {
-            const cellTexts: string[] = [];
-            for (let r = 0; r < tbl.rowCount; r++) {
-              const rowVals: string[] = [];
-              for (let c = 0; c < tbl.columnCount; c++) {
-                const cell = tbl.getCellOrNullObject(r, c);
-                cell.load("text");
-                // Note: we intentionally don't sync inside the loop.
-              }
-            }
-            await context.sync();
-            for (let r = 0; r < tbl.rowCount; r++) {
-              const rowVals: string[] = [];
-              for (let c = 0; c < tbl.columnCount; c++) {
-                const cell = tbl.getCellOrNullObject(r, c);
-                // cell.text is loaded from the previous sync
-                rowVals.push(cell.text ?? "");
-              }
-              cellTexts.push(rowVals.join("\t"));
-            }
-            const t = cellTexts.join("\n").trim();
-            if (t) parts.push(t);
+      // tables
+      for (const tb of tables) {
+        for (let r = 0; r < tb.rowCount; r++) {
+          for (let c = 0; c < tb.columnCount; c++) {
+            const cell = (tb.values[r][c] ?? "").toString().trim();
+            if (cell) parts.push(cell);
           }
         }
       }
 
-      // Stage 4: recurse into any groups discovered
+      // recurse into groups
       for (const inner of toRecurse) {
-        await collectFromShapes(inner);
+        await walkShapes(inner);
       }
+    };
+
+    // 2) If shapes are selected, read them
+    const selectedShapes = pres.getSelectedShapes();
+    selectedShapes.load("items/type");
+    await context.sync();
+
+    if (selectedShapes.items.length > 0) {
+      await walkShapes(selectedShapes);
+      return parts.join("\n\n");
     }
 
-    await collectFromShapes(selectedShapes);
+    // 3) Otherwise, read the whole presentation
+    const slides = pres.slides;
+    slides.load("items");
+    await context.sync();
+
+    for (const slide of slides.items) {
+      // slide content
+      await walkShapes(slide.shapes);
+
+      // notes page content (if supported in your client)
+      const notesShapes = (slide as any).notesPage?.shapes as PowerPoint.ShapeScopedCollection | undefined;
+      if (notesShapes) await walkShapes(notesShapes);
+    }
 
     return parts.join("\n\n");
   });
