@@ -1,14 +1,21 @@
 /**
- * Walks the entire presentation and returns all textual content.
- * - Slides + (if available) Notes Pages
- * - Text frames, tables, and nested groups
+ * Return all text in the presentation (slides + notes when available),
+ * independent of any selection.
  */
 export async function getWholeDeckText(): Promise<string> {
   return PowerPoint.run(async (context) => {
     const pres = context.presentation;
     const parts: string[] = [];
 
-    // helper to walk shapes recursively and collect text
+    // Force-hydrate the presentation & slides so this works with no selection.
+    pres.load("slides");
+    await context.sync();
+
+    const slides = pres.slides;
+    slides.load("items");
+    await context.sync();
+
+    // --- helper to walk shapes recursively ---
     const walkShapes = async (scoped: PowerPoint.ShapeScopedCollection) => {
       scoped.load("items/type");
       await context.sync();
@@ -21,9 +28,9 @@ export async function getWholeDeckText(): Promise<string> {
         if (shape.type === PowerPoint.ShapeType.group) {
           recurse.push(shape.group.shapes);
         } else if (shape.type === PowerPoint.ShapeType.table) {
-          const table = shape.getTable();
-          table.load("values,rowCount,columnCount");
-          tables.push(table);
+          const tbl = shape.getTable();
+          tbl.load("values,rowCount,columnCount");
+          tables.push(tbl);
         } else {
           const tf = shape.getTextFrameOrNullObject();
           tf.load("hasText,textRange/text");
@@ -32,7 +39,6 @@ export async function getWholeDeckText(): Promise<string> {
       }
       await context.sync();
 
-      // collect text frames
       for (const tf of frames) {
         if (!tf.isNullObject && tf.hasText && tf.textRange && typeof tf.textRange.text === "string") {
           const t = (tf.textRange.text || "").trim();
@@ -40,7 +46,6 @@ export async function getWholeDeckText(): Promise<string> {
         }
       }
 
-      // collect table cell text
       for (const tb of tables) {
         for (let r = 0; r < tb.rowCount; r++) {
           for (let c = 0; c < tb.columnCount; c++) {
@@ -50,21 +55,20 @@ export async function getWholeDeckText(): Promise<string> {
         }
       }
 
-      // recurse into grouped shapes
       for (const inner of recurse) {
         await walkShapes(inner);
       }
     };
+    // --- end helper ---
 
-    // iterate all slides
-    const slides = pres.slides;
-    slides.load("items");
-    await context.sync();
-
+    // Walk each slide (explicitly load shapes to avoid lazy-hydration issues)
     for (const slide of slides.items) {
+      slide.load("shapes");
+      await context.sync();
+
       await walkShapes(slide.shapes);
 
-      // notes page text (if available in client)
+      // Notes page (guarded: not on all clients)
       const notesPage = (slide as any).notesPage;
       if (notesPage?.shapes) {
         await walkShapes(notesPage.shapes);
