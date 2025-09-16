@@ -1,35 +1,25 @@
 /**
- * Returns selected text if any; otherwise the textual content of the selected shapes;
- * otherwise the entire presentation's textual content (all slides, tables, and groups).
+ * Walks the entire presentation and returns all textual content.
+ * - Slides + (if available) Notes Pages
+ * - Text frames, tables, and nested groups
  */
-export async function getSelectedTextOrWholeDeck(): Promise<string> {
+export async function getWholeDeckText(): Promise<string> {
   return PowerPoint.run(async (context) => {
     const pres = context.presentation;
-
-    // 1) If user has a text selection, return it
-    const selectedText = pres.getSelectedTextRangeOrNullObject();
-    await context.sync();
-    if (!selectedText.isNullObject) {
-      selectedText.load("text");
-      await context.sync();
-      const t = (selectedText.text ?? "").trim();
-      if (t) return t;
-    }
-
     const parts: string[] = [];
 
-    // Helper: walk shapes (handles groups, tables, and text frames)
+    // helper to walk shapes recursively and collect text
     const walkShapes = async (scoped: PowerPoint.ShapeScopedCollection) => {
       scoped.load("items/type");
       await context.sync();
 
       const frames: PowerPoint.TextFrame[] = [];
       const tables: PowerPoint.Table[] = [];
-      const toRecurse: PowerPoint.ShapeScopedCollection[] = [];
+      const recurse: PowerPoint.ShapeScopedCollection[] = [];
 
       for (const shape of scoped.items) {
         if (shape.type === PowerPoint.ShapeType.group) {
-          toRecurse.push(shape.group.shapes);
+          recurse.push(shape.group.shapes);
         } else if (shape.type === PowerPoint.ShapeType.table) {
           const table = shape.getTable();
           table.load("values,rowCount,columnCount");
@@ -42,7 +32,7 @@ export async function getSelectedTextOrWholeDeck(): Promise<string> {
       }
       await context.sync();
 
-      // text frames
+      // collect text frames
       for (const tf of frames) {
         if (!tf.isNullObject && tf.hasText && tf.textRange && typeof tf.textRange.text === "string") {
           const t = (tf.textRange.text || "").trim();
@@ -50,44 +40,35 @@ export async function getSelectedTextOrWholeDeck(): Promise<string> {
         }
       }
 
-      // tables
+      // collect table cell text
       for (const tb of tables) {
         for (let r = 0; r < tb.rowCount; r++) {
           for (let c = 0; c < tb.columnCount; c++) {
-            const cell = (tb.values[r][c] ?? "").toString().trim();
-            if (cell) parts.push(cell);
+            const t = (tb.values[r][c] ?? "").toString().trim();
+            if (t) parts.push(t);
           }
         }
       }
 
-      // recurse into groups
-      for (const inner of toRecurse) {
+      // recurse into grouped shapes
+      for (const inner of recurse) {
         await walkShapes(inner);
       }
     };
 
-    // 2) If shapes are selected, read them
-    const selectedShapes = pres.getSelectedShapes();
-    selectedShapes.load("items/type");
-    await context.sync();
-
-    if (selectedShapes.items.length > 0) {
-      await walkShapes(selectedShapes);
-      return parts.join("\n\n");
-    }
-
-    // 3) Otherwise, read the whole presentation
+    // iterate all slides
     const slides = pres.slides;
     slides.load("items");
     await context.sync();
 
     for (const slide of slides.items) {
-      // slide content
       await walkShapes(slide.shapes);
 
-      // notes page content (if supported in your client)
-      const notesShapes = (slide as any).notesPage?.shapes as PowerPoint.ShapeScopedCollection | undefined;
-      if (notesShapes) await walkShapes(notesShapes);
+      // notes page text (if available in client)
+      const notesPage = (slide as any).notesPage;
+      if (notesPage?.shapes) {
+        await walkShapes(notesPage.shapes);
+      }
     }
 
     return parts.join("\n\n");
