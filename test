@@ -1,83 +1,83 @@
-/**
- * Returns ALL text from the presentation (slides + notes if available).
- * Works even when nothing is selected.
- */
-export async function getWholeDeckText(): Promise<string> {
-  return PowerPoint.run(async (context) => {
-    const pres = context.presentation;
-    const parts: string[] = [];
+<Hosts>
+  <Host Name="Mailbox"/>
+</Hosts>
 
-    // --- helpers -------------------------------------------------------------
+<Requirements>
+  <Sets DefaultMinVersion="1.5">
+    <Set Name="Mailbox"/>
+  </Sets>
+</Requirements>
 
-    // Walk a ShapeCollection (used on slides, groups, notes pages)
-    const walkShapeCollection = async (coll: PowerPoint.ShapeCollection) => {
-      coll.load("items/type");
-      await context.sync();
 
-      const frames: PowerPoint.TextFrame[] = [];
-      const tables: PowerPoint.Table[] = [];
-      const groups: PowerPoint.ShapeCollection[] = [];
+<VersionOverrides xmlns="http://schemas.microsoft.com/office/mailappversionoverrides/1.1"
+                  xsi:type="VersionOverridesV1_1">
+  <Hosts>
+    <Host xsi:type="MailHost">
+      <DesktopFormFactor>
+        <!-- Ribbon button shown while composing -->
+        <ExtensionPoint xsi:type="MessageComposeCommandSurface">
+          <OfficeTab id="TabDefault">
+            <Group id="msgComposeGroup">
+              <Label resid="groupLabel"/>
+              <Control xsi:type="Button" id="msgComposeButton">
+                <Label resid="buttonLabel"/>
+                <Supertip>
+                  <Title resid="superTipTitle"/>
+                  <Description resid="superTipDesc"/>
+                </Supertip>
+                <Icon>
+                  <bt:Image size="16" resid="icon16"/>
+                  <bt:Image size="32" resid="icon32"/>
+                  <bt:Image size="80" resid="icon80"/>
+                </Icon>
+                <Action xsi:type="ShowTaskPane">
+                  <SourceLocation resid="taskPaneUrl"/>
+                  <SupportsPinning>true</SupportsPinning>
+                </Action>
+              </Control>
+            </Group>
+          </OfficeTab>
+        </ExtensionPoint>
+      </DesktopFormFactor>
+    </Host>
+  </Hosts>
 
-      for (const shape of coll.items) {
-        if (shape.type === PowerPoint.ShapeType.group) {
-          groups.push(shape.group.shapes); // <— ShapeCollection
-        } else if (shape.type === PowerPoint.ShapeType.table) {
-          const tbl = shape.getTable();
-          tbl.load("values,rowCount,columnCount");
-          tables.push(tbl);
-        } else {
-          const tf = shape.getTextFrameOrNullObject();
-          tf.load("hasText,textRange/text");
-          frames.push(tf);
-        }
-      }
-      await context.sync();
+  <!-- Strings, URLs, and icons the button uses -->
+  <Resources>
+    <bt:Images>
+      <bt:Image id="icon16" DefaultValue="https://YOURDOMAIN.com/assets/icon-16.png"/>
+      <bt:Image id="icon32" DefaultValue="https://YOURDOMAIN.com/assets/icon-32.png"/>
+      <bt:Image id="icon80" DefaultValue="https://YOURDOMAIN.com/assets/icon-80.png"/>
+    </bt:Images>
 
-      // collect text frames
-      for (const tf of frames) {
-        if (!tf.isNullObject && tf.hasText && tf.textRange && typeof tf.textRange.text === "string") {
-          const t = (tf.textRange.text || "").trim();
-          if (t) parts.push(t);
-        }
-      }
+    <bt:Urls>
+      <!-- The HTML page for your task pane -->
+      <bt:Url id="taskPaneUrl" DefaultValue="https://YOURDOMAIN.com/taskpane.html"/>
+    </bt:Urls>
 
-      // collect table cells
-      for (const tb of tables) {
-        for (let r = 0; r < tb.rowCount; r++) {
-          for (let c = 0; c < tb.columnCount; c++) {
-            const t = (tb.values[r][c] ?? "").toString().trim();
-            if (t) parts.push(t);
-          }
-        }
-      }
+    <bt:ShortStrings>
+      <bt:String id="groupLabel" DefaultValue="My Add-in"/>
+      <bt:String id="buttonLabel" DefaultValue="Open My Add-in"/>
+      <bt:String id="superTipTitle" DefaultValue="Open My Add-in"/>
+    </bt:ShortStrings>
+    <bt:LongStrings>
+      <bt:String id="superTipDesc" DefaultValue="Open the task pane while composing to use add-in features."/>
+    </bt:LongStrings>
+  </Resources>
+</VersionOverrides>
 
-      // recurse into grouped shapes
-      for (const g of groups) {
-        await walkShapeCollection(g);
-      }
-    };
+<Permissions>ReadWriteItem</Permissions>
 
-    // --- hydrate deck & iterate slides --------------------------------------
+<!-- Target only compose (edit) scenarios -->
+<Rule xsi:type="RuleCollection" Mode="Or">
+  <Rule xsi:type="ItemIs" ItemType="Message" FormType="Edit"/>
+</Rule>
 
-    pres.load("slides");
-    await context.sync();
 
-    const slides = pres.slides;
-    slides.load("items");
-    await context.sync();
 
-    for (const slide of slides.items) {
-      slide.shapes.load("items/type");
-      await context.sync();
-      await walkShapeCollection(slide.shapes);
 
-      // Notes page (guarded; not in all clients)
-      const notesPage = (slide as any).notesPage;
-      if (notesPage?.shapes) {
-        await walkShapeCollection(notesPage.shapes);
-      }
-    }
 
-    return parts.join("\n\n");
-  });
-}
+
+
+
+
