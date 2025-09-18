@@ -1,17 +1,85 @@
-# 1) Trust the local HTTPS cert (one-time)
-npx office-addin-dev-certs install
+<!-- keep your existing VersionOverridesV1_0 for Word/PowerPoint -->
 
-# 2) Allow WebView2 localhost loopback (one-time)
-CheckNetIsolation LoopbackExempt -a -n=Microsoft.Win32WebViewHost_cw5n1h2txyewy
+<!-- ===== OUTLOOK (Mailbox) ===== -->
+<VersionOverrides
+  xmlns="http://schemas.microsoft.com/office/mailappversionoverrides/1.1"
+  xsi:type="VersionOverridesV1_1">
 
-# 3) Enable developer sideloading
-New-Item -Path HKCU:\Software\Microsoft\Office\16.0\WEF -Force | Out-Null
-New-ItemProperty -Path HKCU:\Software\Microsoft\Office\16.0\WEF `
-  -Name DeveloperSideloadingAllowed -PropertyType DWord -Value 1 -Force | Out-Null
+  <Hosts>
+    <Host xsi:type="MailHost">
+      <DesktopFormFactor>
 
-# 4) Copy your manifest into the WEF folder
-$wef = "$env:LOCALAPPDATA\Microsoft\Office\16.0\Wef"
-$guid = "d3eeabdc-1e83-40ff-8857-7012cef4ec06"   # <-- your add-in Id
-$dest = Join-Path $wef $guid
-New-Item -ItemType Directory -Path $dest -Force | Out-Null
-Copy-Item -Path ".\manifest.xml" -Destination (Join-Path $dest "manifest.xml") -Force
+        <!-- Compose (new / reply) -->
+        <ExtensionPoint xsi:type="MessageComposeCommandSurface">
+          <OfficeTab id="TabDefault">
+            <Group id="MsgComposeGroup">
+              <Label resid="Outlook.GroupLabel"/>
+              <Control xsi:type="Button" id="MsgComposeButton">
+                <Label resid="Outlook.ButtonLabel"/>
+                <Supertip>
+                  <Title resid="Outlook.SuperTipTitle"/>
+                  <Description resid="Outlook.SuperTipDesc"/>
+                </Supertip>
+                <Icon>
+                  <bt:Image size="16" resid="OIcon16"/>
+                  <bt:Image size="32" resid="OIcon32"/>
+                  <bt:Image size="80" resid="OIcon80"/>
+                </Icon>
+                <Action xsi:type="ShowTaskPane">
+                  <SourceLocation resid="Taskpane.Url"/>
+                  <SupportsPinning>true</SupportsPinning>
+                </Action>
+              </Control>
+            </Group>
+          </OfficeTab>
+        </ExtensionPoint>
+
+        <!-- Read (view email) -->
+        <ExtensionPoint xsi:type="MessageReadCommandSurface">
+          <OfficeTab id="TabDefault">
+            <Group id="MsgReadGroup">
+              <Label resid="Outlook.GroupLabel"/>
+              <Control xsi:type="Button" id="MsgReadButton">
+                <Label resid="Outlook.ButtonLabel"/>
+                <Supertip>
+                  <Title resid="Outlook.SuperTipTitle"/>
+                  <Description resid="Outlook.SuperTipDesc"/>
+                </Supertip>
+                <Icon>
+                  <bt:Image size="16" resid="OIcon16"/>
+                  <bt:Image size="32" resid="OIcon32"/>
+                  <bt:Image size="80" resid="OIcon80"/>
+                </Icon>
+                <Action xsi:type="ShowTaskPane">
+                  <SourceLocation resid="Taskpane.Url"/>
+                  <SupportsPinning>true</SupportsPinning>
+                </Action>
+              </Control>
+            </Group>
+          </OfficeTab>
+        </ExtensionPoint>
+
+      </DesktopFormFactor>
+    </Host>
+  </Hosts>
+
+  <Resources>
+    <bt:Images>
+      <bt:Image id="OIcon16" DefaultValue="https://localhost:3000/assets/icon-16.png"/>
+      <bt:Image id="OIcon32" DefaultValue="https://localhost:3000/assets/icon-32.png"/>
+      <bt:Image id="OIcon80" DefaultValue="https://localhost:3000/assets/icon-80.png"/>
+    </bt:Images>
+    <bt:Urls>
+      <bt:Url id="Taskpane.Url" DefaultValue="https://localhost:3000/taskpane.html"/>
+    </bt:Urls>
+    <bt:ShortStrings>
+      <bt:String id="Outlook.GroupLabel" DefaultValue="ScrAIbe"/>
+      <bt:String id="Outlook.ButtonLabel" DefaultValue="Open ScrAIbe"/>
+      <bt:String id="Outlook.SuperTipTitle" DefaultValue="Open ScrAIbe"/>
+    </bt:ShortStrings>
+    <bt:LongStrings>
+      <bt:String id="Outlook.SuperTipDesc" DefaultValue="Open the ScrAIbe task pane for this email."/>
+    </bt:LongStrings>
+  </Resources>
+  <!-- no WebApplicationInfo: no SSO needed -->
+</VersionOverrides>
