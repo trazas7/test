@@ -1,3 +1,135 @@
-$wef = "$env:LOCALAPPDATA\Microsoft\Office\16.0\WEF"
-New-Item -ItemType Directory -Force -Path $wef | Out-Null
-Copy-Item ".\manifest.xml" (Join-Path $wef "OutlookPOC.xml") -Force
+<?xml version="1.0" encoding="UTF-8"?>
+<OfficeApp
+  xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+  xmlns:ov="http://schemas.microsoft.com/office/mailappversionoverrides/1.1"
+  xsi:type="MailApp">
+
+  <!-- Basic metadata -->
+  <Id>YOUR-GUID-HERE</Id>
+  <Version>1.0.0.0</Version>
+  <ProviderName>YourName</ProviderName>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="ScrAlbe (Local)"/>
+  <Description DefaultValue="Local POC Outlook add-in that opens https://localhost:3000/taskpane.html"/>
+  <IconUrl DefaultValue="https://localhost:3000/assets/icon-32.png"/>
+  <HighResolutionIconUrl DefaultValue="https://localhost:3000/assets/icon-80.png"/>
+  <SupportUrl DefaultValue="https://localhost:3000/taskpane.html"/>
+
+  <!-- Outlook host -->
+  <Hosts>
+    <Host Name="Mailbox"/>
+  </Hosts>
+
+  <!-- Minimal requirement set for Mailbox add-ins -->
+  <Requirements>
+    <Sets DefaultMinVersion="1.1">
+      <Set Name="Mailbox"/>
+    </Sets>
+  </Requirements>
+
+  <!-- Keep permissions low; we’re only opening a task pane -->
+  <Permissions>ReadItem</Permissions>
+
+  <!-- Activate for both read and compose so the command is available -->
+  <Rule xsi:type="RuleCollection" Mode="Or">
+    <Rule xsi:type="ItemIs" ItemType="Message" FormType="Read"/>
+    <Rule xsi:type="ItemIs" ItemType="Message" FormType="Edit"/>
+  </Rule>
+
+  <!-- Your local domain -->
+  <AppDomains>
+    <AppDomain>https://localhost:3000</AppDomain>
+  </AppDomains>
+
+  <!-- Add-in commands -->
+  <VersionOverrides xsi:type="VersionOverridesV1_1" xmlns="http://schemas.microsoft.com/office/mailappversionoverrides/1.1">
+    <Hosts>
+      <Host xsi:type="MailHost">
+        <DesktopFormFactor>
+
+          <!-- READ surface -->
+          <ExtensionPoint xsi:type="MessageReadCommandSurface">
+            <OfficeTab id="TabDefault">
+              <Group id="msgread.group">
+                <Label resid="residGroupLabel"/>
+                <Control xsi:type="Button" id="msgread.openPane">
+                  <Label resid="residButtonLabel"/>
+                  <Supertip>
+                    <Title resid="residButtonLabel"/>
+                    <Description resid="residButtonDesc"/>
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="icon16"/>
+                    <bt:Image size="32" resid="icon32"/>
+                    <bt:Image size="80" resid="icon80"/>
+                  </Icon>
+                  <Action xsi:type="ShowTaskpane">
+                    <SourceLocation resid="residTaskPaneUrl"/>
+                  </Action>
+                </Control>
+              </Group>
+            </OfficeTab>
+          </ExtensionPoint>
+
+          <!-- COMPOSE surface -->
+          <ExtensionPoint xsi:type="MessageComposeCommandSurface">
+            <OfficeTab id="TabDefault">
+              <Group id="msgcompose.group">
+                <Label resid="residGroupLabel"/>
+                <Control xsi:type="Button" id="msgcompose.openPane">
+                  <Label resid="residButtonLabel"/>
+                  <Supertip>
+                    <Title resid="residButtonLabel"/>
+                    <Description resid="residButtonDesc"/>
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="icon16"/>
+                    <bt:Image size="32" resid="icon32"/>
+                    <bt:Image size="80" resid="icon80"/>
+                  </Icon>
+                  <Action xsi:type="ShowTaskpane">
+                    <SourceLocation resid="residTaskPaneUrl"/>
+                  </Action>
+                </Control>
+              </Group>
+            </OfficeTab>
+          </ExtensionPoint>
+
+        </DesktopFormFactor>
+      </Host>
+    </Hosts>
+
+    <Resources>
+      <bt:Images>
+        <bt:Image id="icon16" DefaultValue="https://localhost:3000/assets/icon-16.png"/>
+        <bt:Image id="icon32" DefaultValue="https://localhost:3000/assets/icon-32.png"/>
+        <bt:Image id="icon80" DefaultValue="https://localhost:3000/assets/icon-80.png"/>
+      </bt:Images>
+      <bt:Urls>
+        <bt:Url id="residTaskPaneUrl" DefaultValue="https://localhost:3000/taskpane.html"/>
+        <!-- FunctionFile is required by schema even if you don’t call ExecuteFunction -->
+        <bt:Url id="residFunctionFileUrl" DefaultValue="https://localhost:3000/function-file.html"/>
+      </bt:Urls>
+      <bt:ShortStrings>
+        <bt:String id="residGroupLabel" DefaultValue="ScrAlbe"/>
+        <bt:String id="residButtonLabel" DefaultValue="Open Panel"/>
+      </bt:ShortStrings>
+      <bt:LongStrings>
+        <bt:String id="residButtonDesc" DefaultValue="Open the local task pane (no sign-in)."/>
+      </bt:LongStrings>
+    </Resources>
+
+    <!-- Needed by schema for commands -->
+    <VersionOverridesV1_0>
+      <Hosts>
+        <Host xsi:type="MailHost">
+          <DesktopFormFactor>
+            <FunctionFile resid="residFunctionFileUrl"/>
+          </DesktopFormFactor>
+        </Host>
+      </Hosts>
+    </VersionOverridesV1_0>
+  </VersionOverrides>
+</OfficeApp>
