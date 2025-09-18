@@ -1,5 +1,3 @@
-# enable sideloading (you already did this once)
-New-ItemProperty -Path HKCU:\Software\Microsoft\Office\16.0\WEF -Name DeveloperSideloadingAllowed -PropertyType DWord -Value 1 -Force
-
-# sideload to desktop Outlook (no browser login involved)
-npx office-addin-dev-settings sideload --app outlook --manifest .\manifest.xml
+$wef = "$env:LOCALAPPDATA\Microsoft\Office\16.0\WEF"
+New-Item -ItemType Directory -Force -Path $wef | Out-Null
+Copy-Item ".\manifest.xml" (Join-Path $wef "OutlookPOC.xml") -Force
