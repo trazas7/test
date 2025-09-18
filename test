@@ -1,85 +1,59 @@
-<!-- keep your existing VersionOverridesV1_0 for Word/PowerPoint -->
+<Hosts>
+  <Host Name="Mailbox"/>
+  <!-- keep Word/Presentation if you still need them -->
+</Hosts>
 
-<!-- ===== OUTLOOK (Mailbox) ===== -->
-<VersionOverrides
-  xmlns="http://schemas.microsoft.com/office/mailappversionoverrides/1.1"
-  xsi:type="VersionOverridesV1_1">
+<AppDomains>
+  <AppDomain>https://localhost:3000</AppDomain>
+</AppDomains>
 
+<VersionOverrides xmlns="http://schemas.microsoft.com/office/mailappversionoverrides/1.1" xsi:type="VersionOverridesV1_1">
   <Hosts>
     <Host xsi:type="MailHost">
       <DesktopFormFactor>
-
-        <!-- Compose (new / reply) -->
-        <ExtensionPoint xsi:type="MessageComposeCommandSurface">
-          <OfficeTab id="TabDefault">
-            <Group id="MsgComposeGroup">
-              <Label resid="Outlook.GroupLabel"/>
-              <Control xsi:type="Button" id="MsgComposeButton">
-                <Label resid="Outlook.ButtonLabel"/>
-                <Supertip>
-                  <Title resid="Outlook.SuperTipTitle"/>
-                  <Description resid="Outlook.SuperTipDesc"/>
-                </Supertip>
-                <Icon>
-                  <bt:Image size="16" resid="OIcon16"/>
-                  <bt:Image size="32" resid="OIcon32"/>
-                  <bt:Image size="80" resid="OIcon80"/>
-                </Icon>
-                <Action xsi:type="ShowTaskPane">
-                  <SourceLocation resid="Taskpane.Url"/>
-                  <SupportsPinning>true</SupportsPinning>
-                </Action>
-              </Control>
-            </Group>
-          </OfficeTab>
-        </ExtensionPoint>
-
-        <!-- Read (view email) -->
+        <FunctionFile resid="residFunctionFileUrl" />
         <ExtensionPoint xsi:type="MessageReadCommandSurface">
           <OfficeTab id="TabDefault">
-            <Group id="MsgReadGroup">
-              <Label resid="Outlook.GroupLabel"/>
-              <Control xsi:type="Button" id="MsgReadButton">
-                <Label resid="Outlook.ButtonLabel"/>
+            <Group id="msgread.group">
+              <Label resid="residGroupLabel"/>
+              <Control xsi:type="Button" id="msgread.openPane">
+                <Label resid="residButtonLabel"/>
                 <Supertip>
-                  <Title resid="Outlook.SuperTipTitle"/>
-                  <Description resid="Outlook.SuperTipDesc"/>
+                  <Title resid="residButtonLabel"/>
+                  <Description resid="residButtonDesc"/>
                 </Supertip>
                 <Icon>
-                  <bt:Image size="16" resid="OIcon16"/>
-                  <bt:Image size="32" resid="OIcon32"/>
-                  <bt:Image size="80" resid="OIcon80"/>
+                  <bt:Image size="16" resid="icon16"/>
+                  <bt:Image size="32" resid="icon32"/>
+                  <bt:Image size="80" resid="icon80"/>
                 </Icon>
-                <Action xsi:type="ShowTaskPane">
-                  <SourceLocation resid="Taskpane.Url"/>
-                  <SupportsPinning>true</SupportsPinning>
+                <Action xsi:type="ShowTaskpane">
+                  <SourceLocation resid="residTaskPaneUrl"/>
                 </Action>
               </Control>
             </Group>
           </OfficeTab>
         </ExtensionPoint>
-
       </DesktopFormFactor>
     </Host>
   </Hosts>
 
   <Resources>
     <bt:Images>
-      <bt:Image id="OIcon16" DefaultValue="https://localhost:3000/assets/icon-16.png"/>
-      <bt:Image id="OIcon32" DefaultValue="https://localhost:3000/assets/icon-32.png"/>
-      <bt:Image id="OIcon80" DefaultValue="https://localhost:3000/assets/icon-80.png"/>
+      <bt:Image id="icon16" DefaultValue="https://localhost:3000/assets/icon-16.png"/>
+      <bt:Image id="icon32" DefaultValue="https://localhost:3000/assets/icon-32.png"/>
+      <bt:Image id="icon80" DefaultValue="https://localhost:3000/assets/icon-80.png"/>
     </bt:Images>
     <bt:Urls>
-      <bt:Url id="Taskpane.Url" DefaultValue="https://localhost:3000/taskpane.html"/>
+      <bt:Url id="residTaskPaneUrl" DefaultValue="https://localhost:3000/taskpane.html"/>
+      <bt:Url id="residFunctionFileUrl" DefaultValue="https://localhost:3000/function-file.html"/>
     </bt:Urls>
     <bt:ShortStrings>
-      <bt:String id="Outlook.GroupLabel" DefaultValue="ScrAIbe"/>
-      <bt:String id="Outlook.ButtonLabel" DefaultValue="Open ScrAIbe"/>
-      <bt:String id="Outlook.SuperTipTitle" DefaultValue="Open ScrAIbe"/>
+      <bt:String id="residGroupLabel" DefaultValue="My Add-in"/>
+      <bt:String id="residButtonLabel" DefaultValue="Open Panel"/>
     </bt:ShortStrings>
     <bt:LongStrings>
-      <bt:String id="Outlook.SuperTipDesc" DefaultValue="Open the ScrAIbe task pane for this email."/>
+      <bt:String id="residButtonDesc" DefaultValue="Open the local task pane."/>
     </bt:LongStrings>
   </Resources>
-  <!-- no WebApplicationInfo: no SSO needed -->
 </VersionOverrides>
