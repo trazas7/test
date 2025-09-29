@@ -1,22 +1,41 @@
-const add = (tag: string, value: string) =>
-    saveSubscription.tagValues.push({ tag, value } as TagValue);
+private buildThemeTags(): { tag: string, value: string }[] {
+  const result: { tag: string, value: string }[] = [];
 
-  const addSet = (tag: string, set?: Set<string>) => {
-    if (set && set.size > 0) {
-      set.forEach(v => add(tag, v));
-    } else {
-      add(tag, 'ALL_VALUES');
+  Object.keys(this.selectedThemes || {}).forEach(themeKey => {
+    const selected = this.selectedThemes[themeKey];
+    if (selected && selected.size > 0) {
+      result.push({ tag: 'Theme', value: themeKey });
     }
-  };
+  });
 
-  // -----------------------------
-  // EXISTING TAGS (fallback to ALL_VALUES)
-  // -----------------------------
-  // Asset Class and Region come from your UI
-  addSet('Asset_Class', this.selectedAssetClass);
-  addSet('Region', this.selectedRegions);
+  return result.length > 0 ? result : [{ tag: 'Theme', value: 'ALL_VALUES' }];
+}
 
-  // If you don’t collect these yet on the new page, keep ALL_VALUES
-  add('Publication Type', 'ALL_VALUES');
-  add('Language', 'ALL_VALUES');
-  add('Industry Group', 'ALL_VALUES');
+private buildSubThemeTags(): { tag: string, value: string }[] {
+  const result: { tag: string, value: string }[] = [];
+
+  Object.keys(this.selectedSubTheme || {}).forEach(themeKey => {
+    const subSet = this.selectedSubTheme[themeKey];
+
+    if (subSet && subSet.size > 0) {
+      subSet.forEach(subValue => {
+        result.push({ tag: 'Sub-Theme', value: subValue });
+      });
+    }
+  });
+
+  return result.length > 0 ? result : [{ tag: 'Sub-Theme', value: 'ALL_VALUES' }];
+}
+private buildAssetClassTags(): { tag: string, value: string }[] {
+  const result: { tag: string, value: string }[] = [];
+
+  (this.selectedAssetClass || new Set<string>()).forEach(asset => {
+    result.push({ tag: 'Asset_Class', value: asset });
+  });
+
+  return result.length > 0 ? result : [{ tag: 'Asset_Class', value: 'ALL_VALUES' }];
+}
+
+
+
+
