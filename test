@@ -1,1 +1,10 @@
+Windows Registry Editor Version 5.00
 
+; Outlook Web Add-in folder catalog (HKCU)
+; Points Office to a folder that contains your manifest.xml
+
+[HKEY_CURRENT_USER\Software\Microsoft\Office\16.0\WEF\TrustedCatalogs\{D1A6C41E-8B2E-41FA-8C94-B12A6E7EAE11}]
+"CatalogType"=dword:00000002
+"Path"="C:\\Users\\e37296\\git\\scraibe-authoring-assistant"
+"Description"="ScrAibe Local Dev Catalog"
+"UpdateEnabled"=dword:00000001
