@@ -1,10 +1,120 @@
-Windows Registry Editor Version 5.00
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<OfficeApp
+  xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+  xmlns:mailappor="http://schemas.microsoft.com/office/mailappversionoverrides/1.0"
+  xsi:type="MailApp">
 
-; Outlook Web Add-in folder catalog (HKCU)
-; Points Office to a folder that contains your manifest.xml
+  <!-- ====== Core identity ====== -->
+  <!-- TODO: generate a new GUID for your add-in -->
+  <Id>f2c1d6a8-57be-42f9-bb5e-8a3c9622b2df</Id>
+  <Version>1.0.0.0</Version>
+  <ProviderName>ScrAibe</ProviderName>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="ScrAibe (Staging)"/>
+  <Description DefaultValue="LLM Assistant for Outlook (Staging)"/>
 
-[HKEY_CURRENT_USER\Software\Microsoft\Office\16.0\WEF\TrustedCatalogs\{D1A6C41E-8B2E-41FA-8C94-B12A6E7EAE11}]
-"CatalogType"=dword:00000002
-"Path"="C:\\Users\\e37296\\git\\scraibe-authoring-assistant"
-"Description"="ScrAibe Local Dev Catalog"
-"UpdateEnabled"=dword:00000001
+  <!-- Small icon (64x64) used in the add-ins store dialog -->
+  <!-- TODO: replace with your icon URL -->
+  <IconUrl DefaultValue="https://YOUR-DOMAIN.example.com/assets/icon-64.png"/>
+  <!-- High-res icon (128x128) -->
+  <HighResolutionIconUrl DefaultValue="https://YOUR-DOMAIN.example.com/assets/icon-128.png"/>
+
+  <!-- ====== Host & requirements ====== -->
+  <Hosts>
+    <Host Name="Mailbox"/>
+  </Hosts>
+
+  <!-- Minimum Mailbox requirement set -->
+  <Requirements>
+    <Sets DefaultMinVersion="1.1">
+      <Set Name="Mailbox"/>
+    </Sets>
+  </Requirements>
+
+  <!-- Permissions:
+       - ReadItem: read-only on current item
+       - ReadWriteMailbox: full mailbox (only if you need it)
+  -->
+  <Permissions>ReadItem</Permissions>
+
+  <!-- ====== (Optional) Activation rule using regex ======
+       Shows the add-in (command) only on messages that match the regex.
+       Keep patterns efficient. You can remove this whole block if you want the add-in
+       available on all messages.
+  -->
+  <Rule xsi:type="RuleCollection" Mode="And">
+    <Rule xsi:type="ItemIs" ItemType="Message" FormType="Read"/>
+    <!-- TODO: adjust or remove this sample regex -->
+    <Rule xsi:type="ItemHasRegularExpressionMatch"
+          RegExName="TicketId"
+          RegExValue="\\bABC-\\d{5}\\b"
+          PropertyName="BodyOrSubject"/>
+  </Rule>
+
+  <!-- ====== Version Overrides (commands + pages) ====== -->
+  <VersionOverrides xmlns="http://schemas.microsoft.com/office/mailappversionoverrides/1.0" xsi:type="VersionOverridesV1_0">
+
+    <!-- Resources (localized strings and icons) -->
+    <Resources>
+      <bt:Images>
+        <bt:Image id="Icon16x16" DefaultValue="https://YOUR-DOMAIN.example.com/assets/icon-16.png"/>
+        <bt:Image id="Icon32x32" DefaultValue="https://YOUR-DOMAIN.example.com/assets/icon-32.png"/>
+        <bt:Image id="Icon80x80" DefaultValue="https://YOUR-DOMAIN.example.com/assets/icon-80.png"/>
+      </bt:Images>
+
+      <bt:Urls>
+        <!-- TODO: replace with your task pane page -->
+        <bt:Url id="TaskPane.Url" DefaultValue="https://YOUR-DOMAIN.example.com/taskpane.html"/>
+        <!-- TODO: replace with your function file (defines JS functions like onMessageReadCommand) -->
+        <bt:Url id="FunctionFile.Url" DefaultValue="https://YOUR-DOMAIN.example.com/function-file.html"/>
+        <!-- Optional help/support -->
+        <bt:Url id="Support.Url" DefaultValue="https://YOUR-DOMAIN.example.com/help"/>
+      </bt:Urls>
+
+      <bt:ShortStrings>
+        <bt:String id="Group.Label" DefaultValue="ScrAibe"/>
+        <bt:String id="Command.Read.Label" DefaultValue="Open ScrAibe"/>
+        <bt:String id="TaskPane.Title" DefaultValue="ScrAibe"/>
+      </bt:ShortStrings>
+
+      <bt:LongStrings>
+        <bt:String id="Command.Read.Tooltip" DefaultValue="Open the ScrAibe task pane for this message."/>
+      </bt:LongStrings>
+    </Resources>
+
+    <!-- Add-in commands (Read surface) -->
+    <ExtensionPoints>
+      <!-- Command button on Message Read ribbon -->
+      <MessageReadCommandSurface>
+        <OfficeTab id="TabDefault">
+          <Group id="ScrAibe.Group" label="Group.Label" icon="Icon80x80">
+            <Control xsi:type="Button" id="ScrAibe.Read.Button"
+                     label="Command.Read.Label"
+                     tooltip="Command.Read.Tooltip"
+                     icon="Icon16x16"
+                     action="ShowTaskPane">
+              <Action xsi:type="ShowTaskpane">
+                <SourceLocation resid="TaskPane.Url"/>
+                <Title resid="TaskPane.Title"/>
+              </Action>
+            </Control>
+          </Group>
+        </OfficeTab>
+        <!-- Function file is required even if you only show a task pane -->
+        <FunctionFile resid="FunctionFile.Url"/>
+      </MessageReadCommandSurface>
+    </ExtensionPoints>
+
+    <!-- Domains your pages/scripts are allowed to load from -->
+    <AppDomains>
+      <!-- TODO: list each domain you use (no trailing slash) -->
+      <AppDomain>https://YOUR-DOMAIN.example.com</AppDomain>
+      <!-- e.g. <AppDomain>https://cdn.yourdomain.example.com</AppDomain> -->
+    </AppDomains>
+
+    <!-- (Optional) Supports pinning the task pane so it stays open across items -->
+    <SupportsPinning>true</SupportsPinning>
+  </VersionOverrides>
+</OfficeApp>
