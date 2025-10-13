@@ -1,99 +1,21 @@
-// ppt-selection-reader.ts
-export async function getPptSelectedTextOrShapeOrAll(): Promise<string> {
-  return PowerPoint.run(async (context) => {
-    const pres = context.presentation;
+// server.js
+const express = require("express");
+const cors = require("cors");
+const app = express();
 
-    // 1) If the user has a text selection, return it.
-    const selectedText = pres.getSelectedTextRangeOrNullObject();
-    await context.sync();
-    if (!selectedText.isNullObject) {
-      selectedText.load("text");
-      await context.sync();
-      return (selectedText.text ?? "").trim();
-    }
+// allow your frontend origin
+app.use(cors({
+  origin: "https://localhost:3000",   // exact origin
+  methods: ["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
+  allowedHeaders: ["Content-Type","Authorization"],
+  credentials: true                    // only if you use cookies/auth headers
+}));
 
-    // Helper that collects text from a shape collection (selected / slide / group)
-    async function collectFromShapes(scoped: any, parts: string[]) {
-      const frames: PowerPoint.TextFrame[] = [];
-      const tables: PowerPoint.Table[] = [];
-      const toRecurse: any[] = [];
+// (optional) handle preflight explicitly if you have custom routes
+app.options("*", cors());
 
-      scoped.load?.("items/type,id,name");
-      await context.sync();
+app.get("/prompts", (req, res) => {
+  res.json([{ id: 1, text: "Hello from API" }]);
+});
 
-      for (const shape of scoped.items as PowerPoint.Shape[]) {
-        if (shape.type === PowerPoint.ShapeType.group) {
-          // Recurse into groups
-          toRecurse.push(shape.group.shapes);
-        } else if (shape.type === PowerPoint.ShapeType.table) {
-          const table = shape.getTable();
-          table.load("values,rowCount,columnCount");
-          tables.push(table);
-        } else {
-          const tf = shape.getTextFrameOrNullObject();
-          tf.load("hasText,textRange/text");
-          frames.push(tf);
-        }
-      }
-      await context.sync();
-
-      // text frames
-      for (const tf of frames) {
-        if (!tf.isNullObject && tf.hasText && tf.textRange && typeof tf.textRange.text === "string") {
-          const t = (tf.textRange.text || "").trim();
-          if (t) parts.push(t);
-        }
-      }
-
-      // tables (fast path if `values` is available, otherwise read cell-by-cell)
-      for (const tbl of tables) {
-        if (Array.isArray((tbl as any).values)) {
-          const t = (tbl as any).values.map((row: string[]) => row.join("\t")).join("\n").trim();
-          if (t) parts.push(t);
-        } else if (typeof tbl.rowCount === "number" && typeof tbl.columnCount === "number") {
-          const cellTexts: string[] = [];
-          for (let r = 0; r < tbl.rowCount; r++) {
-            const rowVals: string[] = [];
-            for (let c = 0; c < tbl.columnCount; c++) {
-              const cell = tbl.getCellOrNullObject(r, c);
-              cell.load("text");
-              await context.sync();
-              rowVals.push(cell.text ?? "");
-            }
-            cellTexts.push(rowVals.join("\t"));
-          }
-          const t = cellTexts.join("\n").trim();
-          if (t) parts.push(t);
-        }
-      }
-
-      // recurse into nested groups
-      for (const inner of toRecurse) {
-        await collectFromShapes(inner, parts);
-      }
-    }
-
-    // 2) If there are selected shapes, read just those.
-    const selectedShapes = pres.getSelectedShapes();
-    selectedShapes.load("items/type,id,name");
-    await context.sync();
-    if ((selectedShapes.items?.length ?? 0) > 0) {
-      const parts: string[] = [];
-      await collectFromShapes(selectedShapes, parts);
-      return parts.join("\n\n");
-    }
-
-    // 3) Nothing selected → walk the whole presentation, slide by slide.
-    const parts: string[] = [];
-    const slides = pres.slides;
-    slides.load("items");
-    await context.sync();
-
-    for (const slide of slides.items) {
-      // slide.shapes works like a scoped collection for the slide
-      await collectFromShapes(slide.shapes as any, parts);
-    }
-
-    return parts.join("\n\n");
-  });
-}
+app.listen(4000, () => console.log("API on http://localhost:4000"));
