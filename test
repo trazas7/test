@@ -1,120 +1,99 @@
-<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<OfficeApp
-  xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
-  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-  xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
-  xmlns:mailappor="http://schemas.microsoft.com/office/mailappversionoverrides/1.0"
-  xsi:type="MailApp">
+// ppt-selection-reader.ts
+export async function getPptSelectedTextOrShapeOrAll(): Promise<string> {
+  return PowerPoint.run(async (context) => {
+    const pres = context.presentation;
 
-  <!-- ====== Core identity ====== -->
-  <!-- TODO: generate a new GUID for your add-in -->
-  <Id>f2c1d6a8-57be-42f9-bb5e-8a3c9622b2df</Id>
-  <Version>1.0.0.0</Version>
-  <ProviderName>ScrAibe</ProviderName>
-  <DefaultLocale>en-US</DefaultLocale>
-  <DisplayName DefaultValue="ScrAibe (Staging)"/>
-  <Description DefaultValue="LLM Assistant for Outlook (Staging)"/>
+    // 1) If the user has a text selection, return it.
+    const selectedText = pres.getSelectedTextRangeOrNullObject();
+    await context.sync();
+    if (!selectedText.isNullObject) {
+      selectedText.load("text");
+      await context.sync();
+      return (selectedText.text ?? "").trim();
+    }
 
-  <!-- Small icon (64x64) used in the add-ins store dialog -->
-  <!-- TODO: replace with your icon URL -->
-  <IconUrl DefaultValue="https://YOUR-DOMAIN.example.com/assets/icon-64.png"/>
-  <!-- High-res icon (128x128) -->
-  <HighResolutionIconUrl DefaultValue="https://YOUR-DOMAIN.example.com/assets/icon-128.png"/>
+    // Helper that collects text from a shape collection (selected / slide / group)
+    async function collectFromShapes(scoped: any, parts: string[]) {
+      const frames: PowerPoint.TextFrame[] = [];
+      const tables: PowerPoint.Table[] = [];
+      const toRecurse: any[] = [];
 
-  <!-- ====== Host & requirements ====== -->
-  <Hosts>
-    <Host Name="Mailbox"/>
-  </Hosts>
+      scoped.load?.("items/type,id,name");
+      await context.sync();
 
-  <!-- Minimum Mailbox requirement set -->
-  <Requirements>
-    <Sets DefaultMinVersion="1.1">
-      <Set Name="Mailbox"/>
-    </Sets>
-  </Requirements>
+      for (const shape of scoped.items as PowerPoint.Shape[]) {
+        if (shape.type === PowerPoint.ShapeType.group) {
+          // Recurse into groups
+          toRecurse.push(shape.group.shapes);
+        } else if (shape.type === PowerPoint.ShapeType.table) {
+          const table = shape.getTable();
+          table.load("values,rowCount,columnCount");
+          tables.push(table);
+        } else {
+          const tf = shape.getTextFrameOrNullObject();
+          tf.load("hasText,textRange/text");
+          frames.push(tf);
+        }
+      }
+      await context.sync();
 
-  <!-- Permissions:
-       - ReadItem: read-only on current item
-       - ReadWriteMailbox: full mailbox (only if you need it)
-  -->
-  <Permissions>ReadItem</Permissions>
+      // text frames
+      for (const tf of frames) {
+        if (!tf.isNullObject && tf.hasText && tf.textRange && typeof tf.textRange.text === "string") {
+          const t = (tf.textRange.text || "").trim();
+          if (t) parts.push(t);
+        }
+      }
 
-  <!-- ====== (Optional) Activation rule using regex ======
-       Shows the add-in (command) only on messages that match the regex.
-       Keep patterns efficient. You can remove this whole block if you want the add-in
-       available on all messages.
-  -->
-  <Rule xsi:type="RuleCollection" Mode="And">
-    <Rule xsi:type="ItemIs" ItemType="Message" FormType="Read"/>
-    <!-- TODO: adjust or remove this sample regex -->
-    <Rule xsi:type="ItemHasRegularExpressionMatch"
-          RegExName="TicketId"
-          RegExValue="\\bABC-\\d{5}\\b"
-          PropertyName="BodyOrSubject"/>
-  </Rule>
+      // tables (fast path if `values` is available, otherwise read cell-by-cell)
+      for (const tbl of tables) {
+        if (Array.isArray((tbl as any).values)) {
+          const t = (tbl as any).values.map((row: string[]) => row.join("\t")).join("\n").trim();
+          if (t) parts.push(t);
+        } else if (typeof tbl.rowCount === "number" && typeof tbl.columnCount === "number") {
+          const cellTexts: string[] = [];
+          for (let r = 0; r < tbl.rowCount; r++) {
+            const rowVals: string[] = [];
+            for (let c = 0; c < tbl.columnCount; c++) {
+              const cell = tbl.getCellOrNullObject(r, c);
+              cell.load("text");
+              await context.sync();
+              rowVals.push(cell.text ?? "");
+            }
+            cellTexts.push(rowVals.join("\t"));
+          }
+          const t = cellTexts.join("\n").trim();
+          if (t) parts.push(t);
+        }
+      }
 
-  <!-- ====== Version Overrides (commands + pages) ====== -->
-  <VersionOverrides xmlns="http://schemas.microsoft.com/office/mailappversionoverrides/1.0" xsi:type="VersionOverridesV1_0">
+      // recurse into nested groups
+      for (const inner of toRecurse) {
+        await collectFromShapes(inner, parts);
+      }
+    }
 
-    <!-- Resources (localized strings and icons) -->
-    <Resources>
-      <bt:Images>
-        <bt:Image id="Icon16x16" DefaultValue="https://YOUR-DOMAIN.example.com/assets/icon-16.png"/>
-        <bt:Image id="Icon32x32" DefaultValue="https://YOUR-DOMAIN.example.com/assets/icon-32.png"/>
-        <bt:Image id="Icon80x80" DefaultValue="https://YOUR-DOMAIN.example.com/assets/icon-80.png"/>
-      </bt:Images>
+    // 2) If there are selected shapes, read just those.
+    const selectedShapes = pres.getSelectedShapes();
+    selectedShapes.load("items/type,id,name");
+    await context.sync();
+    if ((selectedShapes.items?.length ?? 0) > 0) {
+      const parts: string[] = [];
+      await collectFromShapes(selectedShapes, parts);
+      return parts.join("\n\n");
+    }
 
-      <bt:Urls>
-        <!-- TODO: replace with your task pane page -->
-        <bt:Url id="TaskPane.Url" DefaultValue="https://YOUR-DOMAIN.example.com/taskpane.html"/>
-        <!-- TODO: replace with your function file (defines JS functions like onMessageReadCommand) -->
-        <bt:Url id="FunctionFile.Url" DefaultValue="https://YOUR-DOMAIN.example.com/function-file.html"/>
-        <!-- Optional help/support -->
-        <bt:Url id="Support.Url" DefaultValue="https://YOUR-DOMAIN.example.com/help"/>
-      </bt:Urls>
+    // 3) Nothing selected → walk the whole presentation, slide by slide.
+    const parts: string[] = [];
+    const slides = pres.slides;
+    slides.load("items");
+    await context.sync();
 
-      <bt:ShortStrings>
-        <bt:String id="Group.Label" DefaultValue="ScrAibe"/>
-        <bt:String id="Command.Read.Label" DefaultValue="Open ScrAibe"/>
-        <bt:String id="TaskPane.Title" DefaultValue="ScrAibe"/>
-      </bt:ShortStrings>
+    for (const slide of slides.items) {
+      // slide.shapes works like a scoped collection for the slide
+      await collectFromShapes(slide.shapes as any, parts);
+    }
 
-      <bt:LongStrings>
-        <bt:String id="Command.Read.Tooltip" DefaultValue="Open the ScrAibe task pane for this message."/>
-      </bt:LongStrings>
-    </Resources>
-
-    <!-- Add-in commands (Read surface) -->
-    <ExtensionPoints>
-      <!-- Command button on Message Read ribbon -->
-      <MessageReadCommandSurface>
-        <OfficeTab id="TabDefault">
-          <Group id="ScrAibe.Group" label="Group.Label" icon="Icon80x80">
-            <Control xsi:type="Button" id="ScrAibe.Read.Button"
-                     label="Command.Read.Label"
-                     tooltip="Command.Read.Tooltip"
-                     icon="Icon16x16"
-                     action="ShowTaskPane">
-              <Action xsi:type="ShowTaskpane">
-                <SourceLocation resid="TaskPane.Url"/>
-                <Title resid="TaskPane.Title"/>
-              </Action>
-            </Control>
-          </Group>
-        </OfficeTab>
-        <!-- Function file is required even if you only show a task pane -->
-        <FunctionFile resid="FunctionFile.Url"/>
-      </MessageReadCommandSurface>
-    </ExtensionPoints>
-
-    <!-- Domains your pages/scripts are allowed to load from -->
-    <AppDomains>
-      <!-- TODO: list each domain you use (no trailing slash) -->
-      <AppDomain>https://YOUR-DOMAIN.example.com</AppDomain>
-      <!-- e.g. <AppDomain>https://cdn.yourdomain.example.com</AppDomain> -->
-    </AppDomains>
-
-    <!-- (Optional) Supports pinning the task pane so it stays open across items -->
-    <SupportsPinning>true</SupportsPinning>
-  </VersionOverrides>
-</OfficeApp>
+    return parts.join("\n\n");
+  });
+}
