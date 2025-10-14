@@ -1,160 +1,200 @@
-export async function getPptSelectedOrAllText(includeNotes: boolean = false): Promise<string> {
+/**
+ * Walks the entire presentation and returns all textual content as a single string.
+ *  - Slides → Shapes (with recursion into Groups)
+ *  - TextFrames (text boxes, placeholders, callouts, most geometric shapes)
+ *  - Tables (uses .values when available, falls back to cell-by-cell)
+ *  - Optional: speaker notes (includeNotes: true)
+ *
+ * Lots of console logs prefixed with [ppt-dump] to help debug.
+ */
+export async function dumpWholeDeckText(opts?: { includeNotes?: boolean }): Promise<string> {
+  const includeNotes = !!opts?.includeNotes;
+
   return PowerPoint.run(async (context) => {
     const t0 = Date.now();
-    const log = (...a: any[]) => console.log("[getPptSelectedOrAllText]", ...a);
+    const log = (...a: any[]) => console.log("[ppt-dump]", ...a);
 
-    // 1) explicit text selection
-    const selText = context.presentation.getSelectedTextRangeOrNullObject();
-    await context.sync();
-    if (!selText.isNullObject) {
-      selText.load("text");
-      await context.sync();
-      const t = (selText.text ?? "").trim();
-      if (t) {
-        log("Returning explicit selection", { length: t.length });
-        return t;
-      }
-    }
-
-    // 2) selected shapes (fallback to deck if empty)
-    const selectedShapes = context.presentation.getSelectedShapes();
-    selectedShapes.load("items/id,name,type");
-    await context.sync();
-
-    if (selectedShapes.items.length) {
-      log("No text selection; reading selected shapes", { count: selectedShapes.items.length });
-      const partsSel: string[] = [];
-      await collectFromShapes(selectedShapes, partsSel, context, log, "selection");
-      const fromSelection = partsSel.join("\n\n").trim();
-      log("Selected shapes text length", fromSelection.length);
-      if (fromSelection) return fromSelection;
-      log("No text extracted from selection; falling back to whole deck");
-    } else {
-      log("Nothing selected; walking entire presentation");
-    }
-
-    // 3) whole presentation
     const slides = context.presentation.slides;
     slides.load("items/id,index,name");
     await context.sync();
 
-    const all: string[] = [];
+    log(`slides: ${slides.items.length}`);
+
+    const deckParts: string[] = [];
+
     for (const slide of slides.items) {
-      log("Visiting slide", { index: slide.index, id: slide.id, name: slide.name });
-      const slideParts: string[] = [
-        `# Slide ${slide.index + 1}${slide.name ? ` — ${slide.name}` : ""}`,
-      ];
+      const header = `# Slide ${slide.index + 1}${slide.name ? ` — ${slide.name}` : ""}`;
+      const slideParts: string[] = [header];
 
-      slide.shapes.load("items/id,name,type");
+      // load shapes for the slide
+      const shapes = slide.shapes;
+      // NOTE: we load ids, names, & types up front; TextFrame/Table details are loaded per kind below.
+      shapes.load("items/id,name,type");
       await context.sync();
-      await collectFromShapes(slide.shapes, slideParts, context, log, "slide");
 
+      log("visit slide", { index: slide.index, id: slide.id, shapes: shapes.items.length });
+
+      // collect text from shapes on the slide (recurses into groups)
+      await collectFromShapeCollection(shapes, slideParts, context, log, "slide");
+
+      // speaker notes (optional)
       if (includeNotes) {
         try {
-          const notesPage = (slide as any).notesPage;
-          if (notesPage) {
+          const notesPage = (slide as any).notesPage; // exposed in newer API sets
+          if (notesPage?.shapes) {
             notesPage.shapes.load("items/id,name,type");
             await context.sync();
+
             const notesParts: string[] = [];
-            await collectFromShapes(notesPage.shapes, notesParts, context, log, "notes");
+            await collectFromShapeCollection(notesPage.shapes, notesParts, context, log, "notes");
             if (notesParts.length) {
               slideParts.push("Notes:");
               slideParts.push(notesParts.join("\n"));
             }
           }
         } catch (e) {
-          log("Reading notes failed:", e);
+          log("notes read failed", e);
         }
       }
 
-      all.push(slideParts.join("\n"));
+      deckParts.push(slideParts.join("\n"));
     }
 
-    const result = all.join("\n\n----\n\n");
-    log("Finished deck walk", {
-      slides: slides.items.length,
-      length: result.length,
-      ms: Date.now() - t0,
-    });
+    const result = deckParts.join("\n\n----\n\n");
+    log("done", { slides: slides.items.length, length: result.length, ms: Date.now() - t0 });
     return result;
   });
 }
 
-async function collectFromShapes(
+/**
+ * Recursively collect text from a ShapeCollection/ShapeScopedCollection.
+ *   - For text-capable shapes, reads TextFrame.textRange.text
+ *   - For tables, first tries table.values; if not available, falls back to cell-by-cell
+ *   - For groups, recurses into group.shapes
+ *
+ * Emits detailed logs for each branch so you can see why text was/wasn't collected.
+ */
+async function collectFromShapeCollection(
   scoped: PowerPoint.ShapeCollection | PowerPoint.ShapeScopedCollection,
   parts: string[],
   ctx: PowerPoint.RequestContext,
   log: (...args: any[]) => void,
-  where: "selection" | "slide" | "notes"
+  where: "slide" | "notes" | "group"
 ) {
-  scoped.load("items/id,name,type,group,table,textFrame/hasText,textFrame/textRange/text");
+  // We already loaded id/name/type on the collection before calling this in the top level.
+  // But callers might pass a nested ShapeScopedCollection (group.shapes). Load again defensively.
+  scoped.load("items/id,name,type");
   await ctx.sync();
 
-  const tableJobs: { id: string; tbl: PowerPoint.Table }[] = [];
+  // batch readers
+  const textFrames: { id: string; tf: PowerPoint.TextFrame }[] = [];
+  const tables: { id: string; tbl: PowerPoint.Table }[] = [];
+  const groups: PowerPoint.ShapeScopedCollection[] = [];
 
   for (const shape of (scoped as any).items as PowerPoint.Shape[]) {
-    log("Shape", { where, id: shape.id, name: shape.name, type: shape.shapeType });
+    log("shape", { where, id: shape.id, name: shape.name, type: shape.type });
 
-    if (shape.shapeType === PowerPoint.ShapeType.group) {
+    // group: recurse later
+    if (shape.type === PowerPoint.ShapeType.group) {
       try {
-        await collectFromShapes(shape.group.shapes, parts, ctx, log, where);
+        groups.push(shape.group.shapes);
       } catch (e) {
-        log("Group read failed", { id: shape.id, e });
+        log("group access failed", { id: shape.id, e });
       }
       continue;
     }
 
-    if (shape.shapeType === PowerPoint.ShapeType.table) {
-      try { tableJobs.push({ id: shape.id as any, tbl: shape.getTable() }); }
-      catch (e) { log("getTable() failed", { id: shape.id, e }); }
+    // table: gather for batch load
+    if (shape.type === PowerPoint.ShapeType.table) {
+      try {
+        tables.push({ id: String(shape.id), tbl: shape.getTable() });
+      } catch (e) {
+        log("getTable failed", { id: shape.id, e });
+      }
       continue;
     }
 
+    // everything else that *can* have text: use safe getter
     try {
-      const tf = shape.getTextFrameOrNullObject();
+      const tf = shape.getTextFrameOrNullObject();  // safe per docs
       tf.load("hasText,textRange/text");
-      await ctx.sync();
-      if (!(tf as any).isNullObject && tf.hasText && tf.textRange && typeof tf.textRange.text === "string") {
-        const t = (tf.textRange.text || "").trim();
-        if (t) { parts.push(t); log("TextFrame extracted", { where, id: shape.id, len: t.length }); }
-        else   { log("TextFrame empty",     { where, id: shape.id }); }
-      }
+      textFrames.push({ id: String(shape.id), tf });
     } catch (e) {
-      log("TextFrame read failed", { id: shape.id, e });
+      log("getTextFrameOrNullObject failed", { id: shape.id, e });
     }
   }
 
-  if (tableJobs.length) {
+  // load the batch of text frames
+  if (textFrames.length) {
+    await ctx.sync();
+    for (const { id, tf } of textFrames) {
+      if (!(tf as any).isNullObject && tf.hasText && tf.textRange && typeof tf.textRange.text === "string") {
+        const t = (tf.textRange.text || "").trim();
+        if (t) {
+          parts.push(t);
+          log("text", { where, id, len: t.length });
+        } else {
+          log("text empty", { where, id });
+        }
+      }
+    }
+  }
+
+  // load the batch of tables
+  if (tables.length) {
     try {
-      for (const j of tableJobs) j.tbl.load("values,rowCount,columnCount");
+      for (const j of tables) j.tbl.load("values,rowCount,columnCount");
       await ctx.sync();
-      for (const { id, tbl } of tableJobs) {
+
+      for (const { id, tbl } of tables) {
         let pushed = false;
         try {
           if (Array.isArray((tbl as any).values)) {
-            const t = (tbl as any).values.map((row: string[]) => row.join("\t")).join("\n").trim();
-            if (t) { parts.push(t); pushed = true; log("Table(values) extracted", { where, id, rows: tbl.rowCount, cols: tbl.columnCount }); }
+            const text = (tbl as any).values
+              .map((row: string[]) => row.map(v => (v ?? "").trim()).join("\t"))
+              .join("\n")
+              .trim();
+            if (text) {
+              parts.push(text);
+              pushed = true;
+              log("table(values)", { where, id, rows: tbl.rowCount, cols: tbl.columnCount });
+            }
           }
-        } catch {}
+        } catch {
+          // fall through
+        }
+
         if (!pushed && typeof tbl.rowCount === "number" && typeof tbl.columnCount === "number") {
-          const out: string[] = [];
+          const rows: string[] = [];
           for (let r = 0; r < tbl.rowCount; r++) {
-            const row: string[] = [];
+            const rowVals: string[] = [];
             for (let c = 0; c < tbl.columnCount; c++) {
               const cell = tbl.getCellOrNullObject(r, c);
               cell.load("text");
-              await ctx.sync();
-              row.push((cell.text ?? "").trim());
             }
-            out.push(row.join("\t"));
+            await ctx.sync(); // load this row’s cells
+            for (let c = 0; c < tbl.columnCount; c++) {
+              const cell = tbl.getCellOrNullObject(r, c);
+              rowVals.push((cell.text ?? "").trim());
+            }
+            rows.push(rowVals.join("\t"));
           }
-          const t = out.join("\n").trim();
-          if (t) { parts.push(t); log("Table(cell-by-cell) extracted", { where, id, rows: tbl.rowCount, cols: tbl.columnCount }); }
-          else   { log("Table empty", { where, id }); }
+          const t = rows.join("\n").trim();
+          if (t) {
+            parts.push(t);
+            log("table(cells)", { where, id, rows: tbl.rowCount, cols: tbl.columnCount });
+          } else {
+            log("table empty", { where, id });
+          }
         }
       }
     } catch (e) {
-      log("Table read failed", e);
+      log("table read failed", e);
     }
+  }
+
+  // recurse into groups last
+  for (const inner of groups) {
+    await collectFromShapeCollection(inner, parts, ctx, log, "group");
   }
 }
