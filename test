@@ -1,16 +1,9 @@
-/**
- * Returns selected text if present; otherwise returns ALL textual content
- * from the entire deck (slides, groups, text boxes, placeholders, tables).
- * Pass includeNotes=true to also collect speaker notes text.
- *
- * Lots of console logs are included to help debug in DevTools.
- */
 export async function getPptSelectedOrAllText(includeNotes: boolean = false): Promise<string> {
   return PowerPoint.run(async (context) => {
     const t0 = Date.now();
     const log = (...a: any[]) => console.log("[getPptSelectedOrAllText]", ...a);
 
-    // ── 1) explicit text selection?
+    // 1) explicit text selection
     const selText = context.presentation.getSelectedTextRangeOrNullObject();
     await context.sync();
     if (!selText.isNullObject) {
@@ -23,7 +16,7 @@ export async function getPptSelectedOrAllText(includeNotes: boolean = false): Pr
       }
     }
 
-    // ── 2) read selected shapes (if any) and if that produces nothing, fall back to whole deck
+    // 2) selected shapes (fallback to deck if empty)
     const selectedShapes = context.presentation.getSelectedShapes();
     selectedShapes.load("items/id,name,type");
     await context.sync();
@@ -40,7 +33,7 @@ export async function getPptSelectedOrAllText(includeNotes: boolean = false): Pr
       log("Nothing selected; walking entire presentation");
     }
 
-    // ── 3) whole presentation
+    // 3) whole presentation
     const slides = context.presentation.slides;
     slides.load("items/id,index,name");
     await context.sync();
@@ -52,15 +45,13 @@ export async function getPptSelectedOrAllText(includeNotes: boolean = false): Pr
         `# Slide ${slide.index + 1}${slide.name ? ` — ${slide.name}` : ""}`,
       ];
 
-      // Slide shapes
       slide.shapes.load("items/id,name,type");
       await context.sync();
       await collectFromShapes(slide.shapes, slideParts, context, log, "slide");
 
-      // Speaker notes (optional)
       if (includeNotes) {
         try {
-          const notesPage = (slide as any).notesPage; // notesPage isn't in older typings
+          const notesPage = (slide as any).notesPage;
           if (notesPage) {
             notesPage.shapes.load("items/id,name,type");
             await context.sync();
@@ -89,11 +80,6 @@ export async function getPptSelectedOrAllText(includeNotes: boolean = false): Pr
   });
 }
 
-/**
- * Recursively collects text from any Shape collection (scoped or not).
- * Handles: text frames, tables (values[][] or cell-by-cell), and groups.
- * Emits verbose logs for troubleshooting.
- */
 async function collectFromShapes(
   scoped: PowerPoint.ShapeCollection | PowerPoint.ShapeScopedCollection,
   parts: string[],
@@ -101,17 +87,14 @@ async function collectFromShapes(
   log: (...args: any[]) => void,
   where: "selection" | "slide" | "notes"
 ) {
-  // Load everything we will query BEFORE reading it
   scoped.load("items/id,name,type,group,table,textFrame/hasText,textFrame/textRange/text");
   await ctx.sync();
 
-  // Batch: for tables we’ll load values after we know which are tables
-  const tablesToRead: { shapeId: string; tbl: PowerPoint.Table }[] = [];
+  const tableJobs: { id: string; tbl: PowerPoint.Table }[] = [];
 
   for (const shape of (scoped as any).items as PowerPoint.Shape[]) {
     log("Shape", { where, id: shape.id, name: shape.name, type: shape.shapeType });
 
-    // group → recurse
     if (shape.shapeType === PowerPoint.ShapeType.group) {
       try {
         await collectFromShapes(shape.group.shapes, parts, ctx, log, where);
@@ -121,75 +104,53 @@ async function collectFromShapes(
       continue;
     }
 
-    // table → collect to read (we batch load values below)
     if (shape.shapeType === PowerPoint.ShapeType.table) {
-      try {
-        const tbl = shape.getTable();
-        tablesToRead.push({ shapeId: shape.id as any, tbl });
-      } catch (e) {
-        log("getTable() failed", { id: shape.id, e });
-      }
+      try { tableJobs.push({ id: shape.id as any, tbl: shape.getTable() }); }
+      catch (e) { log("getTable() failed", { id: shape.id, e }); }
       continue;
     }
 
-    // text frame
     try {
       const tf = shape.getTextFrameOrNullObject();
       tf.load("hasText,textRange/text");
       await ctx.sync();
       if (!(tf as any).isNullObject && tf.hasText && tf.textRange && typeof tf.textRange.text === "string") {
         const t = (tf.textRange.text || "").trim();
-        if (t) {
-          parts.push(t);
-          log("TextFrame extracted", { where, id: shape.id, len: t.length });
-        } else {
-          log("TextFrame empty", { where, id: shape.id });
-        }
+        if (t) { parts.push(t); log("TextFrame extracted", { where, id: shape.id, len: t.length }); }
+        else   { log("TextFrame empty",     { where, id: shape.id }); }
       }
     } catch (e) {
       log("TextFrame read failed", { id: shape.id, e });
     }
   }
 
-  // tables: prefer values[][] if provided; otherwise fall back to cell-by-cell
-  if (tablesToRead.length) {
-    // First try to get values in one batch
+  if (tableJobs.length) {
     try {
-      for (const t of tablesToRead) t.tbl.load("values,rowCount,columnCount");
+      for (const j of tableJobs) j.tbl.load("values,rowCount,columnCount");
       await ctx.sync();
-
-      for (const { shapeId, tbl } of tablesToRead) {
+      for (const { id, tbl } of tableJobs) {
         let pushed = false;
         try {
           if (Array.isArray((tbl as any).values)) {
             const t = (tbl as any).values.map((row: string[]) => row.join("\t")).join("\n").trim();
-            if (t) {
-              parts.push(t);
-              pushed = true;
-              log("Table(values) extracted", { where, id: shapeId, rows: tbl.rowCount, cols: tbl.columnCount });
-            }
+            if (t) { parts.push(t); pushed = true; log("Table(values) extracted", { where, id, rows: tbl.rowCount, cols: tbl.columnCount }); }
           }
-        } catch { /* fall through to cell-by-cell */ }
-
+        } catch {}
         if (!pushed && typeof tbl.rowCount === "number" && typeof tbl.columnCount === "number") {
-          const rowsOut: string[] = [];
+          const out: string[] = [];
           for (let r = 0; r < tbl.rowCount; r++) {
-            const rowVals: string[] = [];
+            const row: string[] = [];
             for (let c = 0; c < tbl.columnCount; c++) {
               const cell = tbl.getCellOrNullObject(r, c);
               cell.load("text");
               await ctx.sync();
-              rowVals.push((cell.text ?? "").trim());
+              row.push((cell.text ?? "").trim());
             }
-            rowsOut.push(rowVals.join("\t"));
+            out.push(row.join("\t"));
           }
-          const t = rowsOut.join("\n").trim();
-          if (t) {
-            parts.push(t);
-            log("Table(cell-by-cell) extracted", { where, id: shapeId, rows: tbl.rowCount, cols: tbl.columnCount });
-          } else {
-            log("Table empty", { where, id: shapeId });
-          }
+          const t = out.join("\n").trim();
+          if (t) { parts.push(t); log("Table(cell-by-cell) extracted", { where, id, rows: tbl.rowCount, cols: tbl.columnCount }); }
+          else   { log("Table empty", { where, id }); }
         }
       }
     } catch (e) {
