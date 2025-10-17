@@ -1,123 +1,145 @@
 /**
- * Robust whole-deck text dump with heavy logging.
- * Captures: text in text boxes/placeholders/auto-shapes, tables (values/cells), groups (recursive).
- * If something fails on a slide, it logs and continues.
+ * Collect ALL visible text in the deck.
+ * - slide.shapes → groups → textFrames + tables
+ * - slide.layout.shapes (placeholders/footers on the layout)
+ * - slide.master.shapes  (footers, logos, legal text on master)
+ * - optional slide notes
+ *
+ * Very verbose logs: search for [ppt-dump] in DevTools.
  */
-export async function dumpWholeDeckTextSafe(includeNotes = false): Promise<string> {
+export async function dumpAllTextFromDeck(opts?: { includeNotes?: boolean }): Promise<string> {
+  const includeNotes = !!opts?.includeNotes;
+
   return PowerPoint.run(async (context) => {
     const log = (...a: any[]) => console.log("[ppt-dump]", ...a);
-    const started = Date.now();
-
     const slides = context.presentation.slides;
+
     slides.load("items/id,index,name");
     await context.sync();
-
-    log(`slides found: ${slides.items.length}`);
+    log("slides", slides.items.length);
 
     const deckOut: string[] = [];
 
     for (const slide of slides.items) {
       const slideHeader = `# Slide ${slide.index + 1}${slide.name ? ` — ${slide.name}` : ""}`;
-      const slideParts: string[] = [slideHeader];
+      const parts: string[] = [slideHeader];
 
+      // 1) Slide’s own shapes
+      await collectFromAnyShapes(slide.shapes, parts, context, log, `slide ${slide.index + 1}`);
+
+      // 2) Layout shapes (content inherited from layout)
       try {
-        // 1) First only load the count so we can log it clearly
-        const s = slide.shapes;
-        s.load("count");
-        await context.sync();
-        log("slide", { index: slide.index, id: slide.id, name: slide.name, shapeCount: s.count });
-
-        // 2) Now load the actual items with the fields we need
-        s.load(
-          "items/id,name,type," +
-          "items/textFrame/hasText," +
-          "items/textFrame/textRange/text"
-        );
-        await context.sync();
-
-        // 3) Collect from these shapes
-        await collectFromShapes(s, slideParts, context, log, "slide");
-
-        // 4) Optional notes
-        if (includeNotes) {
-          try {
-            const notes = (slide as any).notesPage;
-            if (notes?.shapes) {
-              const ns = notes.shapes;
-              ns.load("count");
-              await context.sync();
-              log("notes", { index: slide.index, count: ns.count });
-
-              ns.load(
-                "items/id,name,type," +
-                "items/textFrame/hasText," +
-                "items/textFrame/textRange/text"
-              );
-              await context.sync();
-
-              const notesParts: string[] = [];
-              await collectFromShapes(ns, notesParts, context, log, "notes");
-              if (notesParts.length) {
-                slideParts.push("Notes:");
-                slideParts.push(notesParts.join("\n"));
-              }
-            }
-          } catch (e) {
-            log("notes error", e);
-          }
+        if ((slide as any).layout?.shapes) {
+          log("layout", { slide: slide.index + 1 });
+          await collectFromAnyShapes((slide as any).layout.shapes, parts, context, log, `layout ${slide.index + 1}`);
         }
       } catch (e) {
-        log("slide error", { index: slide.index, e });
+        log("layout read error", { slide: slide.index + 1, e });
       }
 
-      deckOut.push(slideParts.join("\n"));
+      // 3) Master shapes (footers etc.)
+      try {
+        if ((slide as any).master?.shapes) {
+          log("master", { slide: slide.index + 1 });
+          await collectFromAnyShapes((slide as any).master.shapes, parts, context, log, `master ${slide.index + 1}`);
+        }
+      } catch (e) {
+        log("master read error", { slide: slide.index + 1, e });
+      }
+
+      // 4) Notes (optional)
+      if (includeNotes) {
+        try {
+          const notes = (slide as any).notesPage;
+          if (notes?.shapes) {
+            const notesParts: string[] = [];
+            await collectFromAnyShapes(notes.shapes, notesParts, context, log, `notes ${slide.index + 1}`);
+            if (notesParts.length) {
+              parts.push("Notes:");
+              parts.push(notesParts.join("\n"));
+            }
+          }
+        } catch (e) {
+          log("notes read error", { slide: slide.index + 1, e });
+        }
+      }
+
+      deckOut.push(parts.join("\n"));
     }
 
     const result = deckOut.join("\n\n----\n\n");
-    log("done", { slides: slides.items.length, length: result.length, ms: Date.now() - started });
+    log("done", { length: result.length });
     return result;
   });
 }
 
-/** Recursively read shapes. Loads are already done at caller for simple shapes; we only load extra for tables & groups. */
-async function collectFromShapes(
+/**
+ * Collects text from a shape collection:
+ * - loads ids/names/types and textFrame
+ * - pushes text for any frame (even when hasText=false but textRange has content)
+ * - reads tables (values → cells)
+ * - recurses into groups
+ */
+async function collectFromAnyShapes(
   collection: PowerPoint.ShapeCollection | PowerPoint.ShapeScopedCollection,
   out: string[],
   ctx: PowerPoint.RequestContext,
   log: (...args: any[]) => void,
-  where: "slide" | "notes" | "group"
+  where: string
 ) {
-  // 1) fast path: text from already-loaded textFrame fields
-  let textFrames = 0;
-  let textFramesPushed = 0;
+  // Load what we need up-front (CRITICAL)
+  collection.load(
+    "count," +
+    "items/id,name,type," +
+    "items/textFrame/hasText," +
+    "items/textFrame/textRange/text"
+  );
+  await ctx.sync();
 
-  for (const shape of (collection as any).items as PowerPoint.Shape[]) {
-    // IMPORTANT: in the PowerPoint JS API the property is "type" (not "shapeType")
-    const t = (shape as any).type; // enum PowerPoint.ShapeType
-    const n = (shape as any).name;
+  log("shapes", { where, count: (collection as any).count });
+
+  const items = (collection as any).items as PowerPoint.Shape[];
+  let pushedText = 0;
+
+  // 1) Text frames (eager)
+  for (const shape of items) {
+    const type = (shape as any).type;
     const id = shape.id;
-    log("shape", { where, id, name: n, type: t });
-
-    // text boxes / placeholders / autos with text
+    const name = (shape as any).name;
+    // try eager text first
     try {
       const tf = (shape as any).textFrame as PowerPoint.TextFrame | undefined;
-      if (tf && tf.hasText && tf.textRange && typeof tf.textRange.text === "string") {
-        textFrames++;
+      if (tf && tf.textRange && typeof tf.textRange.text === "string") {
         const txt = (tf.textRange.text || "").trim();
         if (txt) {
           out.push(txt);
-          textFramesPushed++;
+          pushedText++;
+          continue;
+        }
+      }
+    } catch { /* fall through */ }
+
+    // fallback: safe getter even if hasText was false or textFrame missing in load
+    try {
+      const safe = shape.getTextFrameOrNullObject();
+      safe.load("hasText,textRange/text");
+      await ctx.sync();
+      if (!(safe as any).isNullObject && safe.textRange && typeof safe.textRange.text === "string") {
+        const txt = (safe.textRange.text || "").trim();
+        if (txt) {
+          out.push(txt);
+          pushedText++;
         }
       }
     } catch (e) {
-      log("textFrame read error", { where, id, e });
+      log("textFrame fallback error", { where, id, e });
     }
   }
-  log("textFrames", { where, found: textFrames, pushed: textFramesPushed });
+  log("text", { where, pushed: pushedText });
 
-  // 2) tables (batch read)
+  // 2) Tables (batch)
   const tableJobs: { id: string; tbl: PowerPoint.Table }[] = [];
-  for (const shape of (collection as any).items as PowerPoint.Shape[]) {
+  for (const shape of items) {
     if ((shape as any).type === PowerPoint.ShapeType.table) {
       try { tableJobs.push({ id: String(shape.id), tbl: shape.getTable() }); }
       catch (e) { log("getTable error", { where, id: shape.id, e }); }
@@ -140,42 +162,28 @@ async function collectFromShapes(
       if (!pushed && typeof tbl.rowCount === "number" && typeof tbl.columnCount === "number") {
         const rows: string[] = [];
         for (let r = 0; r < tbl.rowCount; r++) {
-          // load cells for the row in one go
-          for (let c = 0; c < tbl.columnCount; c++) {
-            const cell = tbl.getCellOrNullObject(r, c);
-            cell.load("text");
-          }
+          // load all cells in row, then read
+          for (let c = 0; c < tbl.columnCount; c++) tbl.getCellOrNullObject(r, c).load("text");
           await ctx.sync();
-
           const row: string[] = [];
-          for (let c = 0; c < tbl.columnCount; c++) {
-            const cell = tbl.getCellOrNullObject(r, c);
-            row.push((cell.text ?? "").trim());
-          }
+          for (let c = 0; c < tbl.columnCount; c++) row.push((tbl.getCellOrNullObject(r, c).text ?? "").trim());
           rows.push(row.join("\t"));
         }
         const t = rows.join("\n").trim();
-        if (t) { out.push(t); log("table(cells)", { where, id, rows: tbl.rowCount, cols: tbl.columnCount }); }
+        if (t) { out.push(t); log("table(cells)", { where, rows: tbl.rowCount, cols: tbl.columnCount }); }
       }
     }
   }
 
-  // 3) groups (recurse)
+  // 3) Groups (recurse)
   const groups: PowerPoint.ShapeScopedCollection[] = [];
-  for (const shape of (collection as any).items as PowerPoint.Shape[]) {
+  for (const shape of items) {
     if ((shape as any).type === PowerPoint.ShapeType.group) {
       try { groups.push(shape.group.shapes); }
-      catch (e) { log("group access error", { where, id: shape.id, e }); }
+      catch (e) { log("group error", { where, id: shape.id, e }); }
     }
   }
-  for (const inner of groups) {
-    // load the same fields for the nested collection before reading
-    inner.load(
-      "items/id,name,type," +
-      "items/textFrame/hasText," +
-      "items/textFrame/textRange/text"
-    );
-    await ctx.sync();
-    await collectFromShapes(inner, out, ctx, log, "group");
+  for (const g of groups) {
+    await collectFromAnyShapes(g, out, ctx, log, `${where}::group`);
   }
 }
