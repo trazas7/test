@@ -1,14 +1,13 @@
 /**
- * Returns: selection text (if any) else selected shapes text else all deck text.
- * Captures text from: text boxes / placeholders / auto-shapes (TextFrame), tables (values or cell-by-cell), and groups (if supported).
- * Also includes optional Layout/Master/Notes crawling.
- * @example const txt = await getSelectedOrAllPptText({ includeLayout:true, includeMaster:true, includeNotes:false, maxChars: 200_000 });
+ * Selection → selected shapes → whole deck (slides [+layout/master/notes]).
+ * Captures: text frames (text boxes, placeholders, auto-shapes), tables (values → cells), groups (if supported).
+ * Very verbose logs for debugging.
  */
 export async function getSelectedOrAllPptText(opts?: {
-  includeLayout?: boolean;
-  includeMaster?: boolean;
-  includeNotes?: boolean;
-  maxChars?: number;
+  includeLayout?: boolean;     // default: true
+  includeMaster?: boolean;     // default: true
+  includeNotes?: boolean;      // default: false
+  maxChars?: number;           // optional cap for LLM
 }): Promise<string> {
   const includeLayout = opts?.includeLayout ?? true;
   const includeMaster = opts?.includeMaster ?? true;
@@ -16,10 +15,10 @@ export async function getSelectedOrAllPptText(opts?: {
   const maxChars      = opts?.maxChars;
 
   return PowerPoint.run(async (context) => {
-    const started = Date.now();
     const log = (...a: any[]) => console.log("[ppt-extract]", ...a);
+    const t0 = Date.now();
 
-    /* --- 0) env info (helps when debugging different tenants/builds) --- */
+    /* 0) Env info (useful when comparing tenants/builds) */
     try {
       log("PowerPointApi supported:", {
         ">=1.5": Office.context.requirements.isSetSupported("PowerPointApi","1.5"),
@@ -27,7 +26,7 @@ export async function getSelectedOrAllPptText(opts?: {
       });
     } catch {}
 
-    /* --- 1) explicit TEXT selection (fast path) --- */
+    /* 1) Explicit text selection */
     try {
       const sel = context.presentation.getSelectedTextRangeOrNullObject();
       await context.sync();
@@ -37,32 +36,31 @@ export async function getSelectedOrAllPptText(opts?: {
         const t = (sel.text ?? "").trim();
         if (t) {
           log("RETURN selection text", { length: t.length });
-          return maybeCap(t, maxChars, log, "selection");
+          return capIfNeeded(t, maxChars, log, "selection");
         }
       }
     } catch (e) {
       log("selection-text error", e);
     }
 
-    /* --- 2) selected SHAPES (tables + text + groups) --- */
+    /* 2) Selected shapes (if any) */
     try {
       const ss = context.presentation.getSelectedShapes();
       ss.load("items/id,name,type");
       await context.sync();
       log("selected-shapes", { count: ss.items?.length });
-
       if (ss.items?.length) {
         const parts: string[] = [];
-        await collectFromShapes(ss, parts, context, log, "selected");
+        await collectTextFromShapes(ss, parts, context, log, "selected");
         const out = parts.join("\n\n").trim();
         log("selected-shapes result", { chunks: parts.length, length: out.length });
-        if (out) return maybeCap(out, maxChars, log, "selected-shapes");
+        if (out) return capIfNeeded(out, maxChars, log, "selected-shapes");
       }
     } catch (e) {
       log("selected-shapes error", e);
     }
 
-    /* --- 3) WHOLE DECK crawl --- */
+    /* 3) Whole deck walk */
     const slides = context.presentation.slides;
     slides.load("items/id,index,name");
     await context.sync();
@@ -74,37 +72,35 @@ export async function getSelectedOrAllPptText(opts?: {
       const header = `# Slide ${slide.index + 1}${slide.name ? ` — ${slide.name}` : ""}`;
       const parts: string[] = [header];
 
-      // slide shapes
-      await collectFromShapes(slide.shapes, parts, context, log, `slide:${slide.index + 1}`);
+      await collectTextFromShapes(slide.shapes, parts, context, log, `slide:${slide.index + 1}`);
 
-      // layout/master often contain footers/placeholders
       if (includeLayout) {
         try {
           const layout = (slide as any).layout;
           if (layout?.shapes) {
-            await collectFromShapes(layout.shapes, parts, context, log, `layout:${slide.index + 1}`);
+            await collectTextFromShapes(layout.shapes, parts, context, log, `layout:${slide.index + 1}`);
           }
         } catch (e) { log("layout error", { slide: slide.index + 1, e }); }
       }
+
       if (includeMaster) {
         try {
           const master = (slide as any).master;
           if (master?.shapes) {
-            await collectFromShapes(master.shapes, parts, context, log, `master:${slide.index + 1}`);
+            await collectTextFromShapes(master.shapes, parts, context, log, `master:${slide.index + 1}`);
           }
         } catch (e) { log("master error", { slide: slide.index + 1, e }); }
       }
 
-      // notes (optional)
       if (includeNotes) {
         try {
-          const notesPage = (slide as any).notesPage;
-          if (notesPage?.shapes) {
-            const noteChunks: string[] = [];
-            await collectFromShapes(notesPage.shapes, noteChunks, context, log, `notes:${slide.index + 1}`);
-            if (noteChunks.length) {
+          const notes = (slide as any).notesPage;
+          if (notes?.shapes) {
+            const noteParts: string[] = [];
+            await collectTextFromShapes(notes.shapes, noteParts, context, log, `notes:${slide.index + 1}`);
+            if (noteParts.length) {
               parts.push("Notes:");
-              parts.push(noteChunks.join("\n"));
+              parts.push(noteParts.join("\n"));
             }
           }
         } catch (e) { log("notes error", { slide: slide.index + 1, e }); }
@@ -114,78 +110,74 @@ export async function getSelectedOrAllPptText(opts?: {
     }
 
     const result = deck.join("\n\n----\n\n").trim();
-    log("RETURN deck", { length: result.length, ms: Date.now() - started });
-    return maybeCap(result, maxChars, log, "deck");
+    log("RETURN deck", { length: result.length, ms: Date.now() - t0 });
+    return capIfNeeded(result, maxChars, log, "deck");
   });
 }
 
-/* ───────────────────────── helpers ───────────────────────── */
+/* ----------------------------- helpers below ------------------------------ */
 
-async function collectFromShapes(
+/**
+ * Reads text from a ShapeCollection or ShapeScopedCollection.
+ * Strategy:
+ *  - First load minimal metadata (id/name/type) for logging.
+ *  - Then **batch-load textFrame on every shape** (hasText + textRange.text) and read it.
+ *  - Handle tables (values → cell fallback).
+ *  - Recurse into groups **only if** group.shapes exists on this build.
+ *  - Never call getTextFrameOrNullObject unless it exists.
+ */
+async function collectTextFromShapes(
   scoped: PowerPoint.ShapeCollection | PowerPoint.ShapeScopedCollection,
   out: string[],
   ctx: PowerPoint.RequestContext,
   log: (...a: any[]) => void,
   where: string
 ) {
-  // Load just enough up front
+  // Load metadata for logging
   scoped.load("items/id,name,type");
   await ctx.sync();
+
   const items = (scoped as any).items as PowerPoint.Shape[] || [];
   log("shapes", { where, count: items.length });
 
-  // Batch: text frames to load; tables to read; groups to recurse
-  const tfToLoad: { id: string; tf: PowerPoint.TextFrame }[] = [];
-  const tables:    { id: string; tbl: PowerPoint.Table }[] = [];
-  const groups:    PowerPoint.ShapeScopedCollection[]     = [];
+  // 1) Batch-load textFrame on *every* shape (this avoids missing-method issues)
+  for (const sh of items) {
+    try {
+      sh.load("textFrame/hasText,textFrame/textRange/text");
+    } catch (e) {
+      // Some proxies may throw on load; ignore and continue
+      log("shape load(textFrame) error", { where, id: sh.id, e });
+    }
+  }
+  await ctx.sync();
 
-  // Collect handles in a first pass
+  let pushedText = 0;
+
   for (const sh of items) {
     log("shape", { where, id: sh.id, name: (sh as any).name, type: (sh as any).type });
 
-    // text frame (safe getter, works even if textFrame isn’t preloaded)
+    // Text frames (direct)
     try {
-      const tf = sh.getTextFrameOrNullObject();
-      tf.load("hasText,textRange/text");
-      tfToLoad.push({ id: String(sh.id), tf });
+      const tf = (sh as any).textFrame as PowerPoint.TextFrame | undefined;
+      if (tf && tf.textRange && typeof tf.textRange.text === "string") {
+        const s = (tf.textRange.text || "").trim();
+        if (s) { out.push(s); pushedText++; }
+      }
     } catch (e) {
-      log("getTextFrameOrNullObject error", { where, id: sh.id, e });
+      log("textFrame read error", { where, id: sh.id, e });
     }
+  }
+  log("text-summary", { where, pushedText });
 
-    // tables
+  // 2) Tables (values → cells)
+  const tables: { id: string; tbl: PowerPoint.Table }[] = [];
+  for (const sh of items) {
     if ((sh as any).type === PowerPoint.ShapeType.table) {
       try { tables.push({ id: String(sh.id), tbl: sh.getTable() }); }
       catch (e) { log("getTable error", { where, id: sh.id, e }); }
     }
-
-    // groups (recurse if supported)
-    if ((sh as any).type === PowerPoint.ShapeType.group) {
-      try {
-        const inner = (sh as any).group?.shapes;
-        if (inner) groups.push(inner);
-        else log("GROUP_UNREADABLE", { where, id: sh.id, note: "No group.shapes on this build" });
-      } catch (e) {
-        log("GROUP_UNREADABLE", { where, id: sh.id, e });
-      }
-    }
   }
 
-  // Read all text frames in one batch
-  let pushedText = 0;
-  try {
-    await ctx.sync();
-    for (const { id, tf } of tfToLoad) {
-      if (!(tf as any).isNullObject && tf.textRange && typeof tf.textRange.text === "string") {
-        const s = (tf.textRange.text || "").trim();
-        if (s) { out.push(s); pushedText++; }
-      }
-    }
-  } catch (e) {
-    log("textFrames batch error", { where, e });
-  }
-  log("text-summary", { where, pushedText });
-
-  // Read tables (prefer values[][])
   if (tables.length) {
     try {
       for (const t of tables) t.tbl.load("values,rowCount,columnCount");
@@ -196,22 +188,22 @@ async function collectFromShapes(
         try {
           const vals = (tbl as any).values as string[][] | undefined;
           if (Array.isArray(vals)) {
-            const txt = vals.map(r => r.map(v => (v ?? "").trim()).join("\t")).join("\n").trim();
-            if (txt) { out.push(txt); pushed = true; log("table(values)", { where, id, rows: tbl.rowCount, cols: tbl.columnCount }); }
+            const text = vals.map(r => r.map(v => (v ?? "").trim()).join("\t")).join("\n").trim();
+            if (text) { out.push(text); pushed = true; log("table(values)", { where, id, rows: tbl.rowCount, cols: tbl.columnCount }); }
           }
-        } catch {}
+        } catch { /* fall through */ }
 
         if (!pushed && typeof tbl.rowCount === "number" && typeof tbl.columnCount === "number") {
-          const rows: string[] = [];
+          const lines: string[] = [];
           for (let r = 0; r < tbl.rowCount; r++) {
             for (let c = 0; c < tbl.columnCount; c++) tbl.getCellOrNullObject(r, c).load("text");
-            await ctx.sync();
+            await ctx.sync(); // load current row
             const row: string[] = [];
             for (let c = 0; c < tbl.columnCount; c++) row.push((tbl.getCellOrNullObject(r, c).text ?? "").trim());
-            rows.push(row.join("\t"));
+            lines.push(row.join("\t"));
           }
-          const txt = rows.join("\n").trim();
-          if (txt) { out.push(txt); log("table(cells)", { where, id, rows: tbl.rowCount, cols: tbl.columnCount }); }
+          const t = lines.join("\n").trim();
+          if (t) { out.push(t); log("table(cells)", { where, rows: tbl.rowCount, cols: tbl.columnCount }); }
         }
       }
     } catch (e) {
@@ -219,14 +211,26 @@ async function collectFromShapes(
     }
   }
 
-  // Recurse into groups
-  for (const inner of groups) {
-    await collectFromShapes(inner, out, ctx, log, `${where}::group`);
+  // 3) Groups (recurse only if supported)
+  const groups: PowerPoint.ShapeScopedCollection[] = [];
+  for (const sh of items) {
+    if ((sh as any).type === PowerPoint.ShapeType.group) {
+      try {
+        const inner = (sh as any).group?.shapes;
+        if (inner) groups.push(inner);
+        else log("GROUP_UNREADABLE", { where, id: sh.id, note: "group.shapes not available on this build" });
+      } catch (e) {
+        log("GROUP_UNREADABLE", { where, id: sh.id, e });
+      }
+    }
+  }
+  for (const g of groups) {
+    await collectTextFromShapes(g, out, ctx, log, `${where}::group`);
   }
 }
 
-function maybeCap(text: string, cap: number | undefined, log: (...a: any[]) => void, tag: string) {
-  if (!cap || text.length <= cap) return text;
-  log("TRUNCATED", { tag, from: text.length, to: cap });
-  return text.slice(0, cap) + "\n\n[TRUNCATED]";
+function capIfNeeded(text: string, max: number | undefined, log: (...a: any[]) => void, where: string) {
+  if (!max || text.length <= max) return text;
+  log("TRUNCATED", { where, from: text.length, to: max });
+  return text.slice(0, max) + "\n\n[TRUNCATED]";
 }
