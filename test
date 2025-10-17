@@ -1,148 +1,214 @@
 /**
- * Collect ALL visible text in the deck.
- * - slide.shapes → groups → textFrames + tables
- * - slide.layout.shapes (placeholders/footers on the layout)
- * - slide.master.shapes  (footers, logos, legal text on master)
- * - optional slide notes
+ * Returns:
+ *  - selected text if there is an active text selection
+ *  - otherwise, text from selected shapes (if shapes are selected)
+ *  - otherwise, text from the entire deck (slides, layouts, masters, notes opt-in)
  *
- * Very verbose logs: search for [ppt-dump] in DevTools.
+ * Heavily logged for debugging.
  */
-export async function dumpAllTextFromDeck(opts?: { includeNotes?: boolean }): Promise<string> {
+export async function getSelectedOrAllPptText(opts?: {
+  includeNotes?: boolean;
+  includeLayoutAndMaster?: boolean;
+  maxChars?: number; // optional cap for LLM
+}): Promise<string> {
   const includeNotes = !!opts?.includeNotes;
+  const includeLayoutAndMaster = opts?.includeLayoutAndMaster !== false; // default: true
+  const maxChars = opts?.maxChars ?? undefined;
 
   return PowerPoint.run(async (context) => {
-    const log = (...a: any[]) => console.log("[ppt-dump]", ...a);
-    const slides = context.presentation.slides;
+    const T0 = Date.now();
+    const log = (...a: any[]) => console.log("[ppt-extract]", ...a);
 
+    // ---- Requirement set check (informational)
+    try {
+      const ok15 = Office.context.requirements.isSetSupported("PowerPointApi", "1.5");
+      const ok16 = Office.context.requirements.isSetSupported("PowerPointApi", "1.6");
+      log("RequirementSet", { "PowerPointApi >=1.5": ok15, ">=1.6": ok16 });
+    } catch {
+      // ignore if unavailable
+    }
+
+    // ---- 1) explicit text selection quick path
+    try {
+      const selText = context.presentation.getSelectedTextRangeOrNullObject(); // API: returns OrNullObject
+      await context.sync();
+      if (!selText.isNullObject) {
+        selText.load("text");
+        await context.sync();
+        const t = (selText.text ?? "").trim();
+        if (t) {
+          log("RETURN selection text", { length: t.length });
+          return maybeCap(t, maxChars, log, "selection");
+        }
+      }
+    } catch (e) {
+      log("selection-text error", e);
+    }
+
+    // ---- 2) selected shapes
+    try {
+      const selShapes = context.presentation.getSelectedShapes();
+      selShapes.load("count,items/id,name,type");
+      await context.sync();
+      log("selected-shapes", { count: (selShapes as any).count });
+
+      if ((selShapes as any).count > 0) {
+        const parts: string[] = [];
+        await collectFromShapeCollection(selShapes, parts, context, log, "selected");
+        const merged = parts.join("\n\n").trim();
+        log("selected-shapes done", { parts: parts.length, length: merged.length });
+        if (merged) return maybeCap(merged, maxChars, log, "selected-shapes");
+      }
+    } catch (e) {
+      log("selected-shapes error", e);
+    }
+
+    // ---- 3) whole deck
+    const pres = context.presentation;
+    const slides = pres.slides;
     slides.load("items/id,index,name");
     await context.sync();
-    log("slides", slides.items.length);
 
-    const deckOut: string[] = [];
+    log("deck", { slideCount: slides.items.length });
+
+    const ALL: string[] = [];
 
     for (const slide of slides.items) {
-      const slideHeader = `# Slide ${slide.index + 1}${slide.name ? ` — ${slide.name}` : ""}`;
-      const parts: string[] = [slideHeader];
+      const header = `# Slide ${slide.index + 1}${slide.name ? ` — ${slide.name}` : ""}`;
+      const parts: string[] = [header];
 
-      // 1) Slide’s own shapes
-      await collectFromAnyShapes(slide.shapes, parts, context, log, `slide ${slide.index + 1}`);
+      // slide shapes
+      await collectFromShapeCollection(slide.shapes, parts, context, log, `slide:${slide.index + 1}`);
 
-      // 2) Layout shapes (content inherited from layout)
-      try {
-        if ((slide as any).layout?.shapes) {
-          log("layout", { slide: slide.index + 1 });
-          await collectFromAnyShapes((slide as any).layout.shapes, parts, context, log, `layout ${slide.index + 1}`);
+      // layout/master (often hold footers/placeholders)
+      if (includeLayoutAndMaster) {
+        try {
+          const layout = (slide as any).layout;
+          if (layout?.shapes) {
+            await collectFromShapeCollection(layout.shapes, parts, context, log, `layout:${slide.index + 1}`);
+          }
+        } catch (e) {
+          log("layout error", { slide: slide.index + 1, e });
         }
-      } catch (e) {
-        log("layout read error", { slide: slide.index + 1, e });
+
+        try {
+          const master = (slide as any).master;
+          if (master?.shapes) {
+            await collectFromShapeCollection(master.shapes, parts, context, log, `master:${slide.index + 1}`);
+          }
+        } catch (e) {
+          log("master error", { slide: slide.index + 1, e });
+        }
       }
 
-      // 3) Master shapes (footers etc.)
-      try {
-        if ((slide as any).master?.shapes) {
-          log("master", { slide: slide.index + 1 });
-          await collectFromAnyShapes((slide as any).master.shapes, parts, context, log, `master ${slide.index + 1}`);
-        }
-      } catch (e) {
-        log("master read error", { slide: slide.index + 1, e });
-      }
-
-      // 4) Notes (optional)
+      // notes
       if (includeNotes) {
         try {
-          const notes = (slide as any).notesPage;
-          if (notes?.shapes) {
-            const notesParts: string[] = [];
-            await collectFromAnyShapes(notes.shapes, notesParts, context, log, `notes ${slide.index + 1}`);
-            if (notesParts.length) {
+          const notesPage = (slide as any).notesPage;
+          if (notesPage?.shapes) {
+            const noteParts: string[] = [];
+            await collectFromShapeCollection(notesPage.shapes, noteParts, context, log, `notes:${slide.index + 1}`);
+            if (noteParts.length) {
               parts.push("Notes:");
-              parts.push(notesParts.join("\n"));
+              parts.push(noteParts.join("\n"));
             }
           }
         } catch (e) {
-          log("notes read error", { slide: slide.index + 1, e });
+          log("notes error", { slide: slide.index + 1, e });
         }
       }
 
-      deckOut.push(parts.join("\n"));
+      ALL.push(parts.join("\n"));
     }
 
-    const result = deckOut.join("\n\n----\n\n");
-    log("done", { length: result.length });
-    return result;
+    const result = ALL.join("\n\n----\n\n").trim();
+    log("RETURN deck", { length: result.length, ms: Date.now() - T0 });
+    return maybeCap(result, maxChars, log, "deck");
   });
 }
 
+/* -------------------------------------------------------------------------- */
+/*                              Helper functions                              */
+/* -------------------------------------------------------------------------- */
+
 /**
- * Collects text from a shape collection:
- * - loads ids/names/types and textFrame
- * - pushes text for any frame (even when hasText=false but textRange has content)
- * - reads tables (values → cells)
- * - recurses into groups
+ * Reads text from any ShapeCollection/ShapeScopedCollection.
+ * - Preloads: id, name, type, textFrame.hasText, textFrame.textRange.text
+ * - Text from text frames (even if hasText=false) and shape.getTextFrameOrNullObject() fallback
+ * - Tables: values[][] if available, else cell-by-cell
+ * - Groups: tries to recurse (if ShapeGroup API available); otherwise logs limitation
  */
-async function collectFromAnyShapes(
-  collection: PowerPoint.ShapeCollection | PowerPoint.ShapeScopedCollection,
+async function collectFromShapeCollection(
+  scoped: PowerPoint.ShapeCollection | PowerPoint.ShapeScopedCollection,
   out: string[],
   ctx: PowerPoint.RequestContext,
   log: (...args: any[]) => void,
   where: string
 ) {
-  // Load what we need up-front (CRITICAL)
-  collection.load(
+  // Preload (critical)
+  scoped.load(
     "count," +
-    "items/id,name,type," +
-    "items/textFrame/hasText," +
-    "items/textFrame/textRange/text"
+      "items/id,items/name,items/type," +
+      "items/textFrame/hasText,items/textFrame/textRange/text"
   );
   await ctx.sync();
 
-  log("shapes", { where, count: (collection as any).count });
+  const count = (scoped as any).count ?? ((scoped as any).items?.length ?? 0);
+  log("shapes", { where, count });
 
-  const items = (collection as any).items as PowerPoint.Shape[];
+  const items = (scoped as any).items as PowerPoint.Shape[];
+
+  // 1) Text from TextFrame (eager) + conservative fallback
   let pushedText = 0;
-
-  // 1) Text frames (eager)
   for (const shape of items) {
-    const type = (shape as any).type;
+    const t = (shape as any).type;
     const id = shape.id;
     const name = (shape as any).name;
-    // try eager text first
+    log("shape", { where, id, name, type: t });
+
+    // eager read (we preloaded textFrame.textRange.text)
     try {
       const tf = (shape as any).textFrame as PowerPoint.TextFrame | undefined;
       if (tf && tf.textRange && typeof tf.textRange.text === "string") {
-        const txt = (tf.textRange.text || "").trim();
-        if (txt) {
-          out.push(txt);
+        const s = (tf.textRange.text || "").trim();
+        if (s) {
+          out.push(s);
           pushedText++;
           continue;
         }
       }
-    } catch { /* fall through */ }
+    } catch (e) {
+      log("textFrame eager error", { where, id, e });
+    }
 
-    // fallback: safe getter even if hasText was false or textFrame missing in load
+    // conservative fallback (works even if hasText was false but text exists)
     try {
-      const safe = shape.getTextFrameOrNullObject();
-      safe.load("hasText,textRange/text");
+      const tf2 = shape.getTextFrameOrNullObject();
+      tf2.load("hasText,textRange/text");
       await ctx.sync();
-      if (!(safe as any).isNullObject && safe.textRange && typeof safe.textRange.text === "string") {
-        const txt = (safe.textRange.text || "").trim();
-        if (txt) {
-          out.push(txt);
+      if (!(tf2 as any).isNullObject && tf2.textRange && typeof tf2.textRange.text === "string") {
+        const s = (tf2.textRange.text || "").trim();
+        if (s) {
+          out.push(s);
           pushedText++;
         }
       }
     } catch (e) {
-      log("textFrame fallback error", { where, id, e });
+      // Some shapes (charts/pictures/lines) will throw; ignore
+      // log("textFrame fallback error", { where, id, e });
     }
   }
-  log("text", { where, pushed: pushedText });
+  log("text-summary", { where, pushedText });
 
   // 2) Tables (batch)
   const tableJobs: { id: string; tbl: PowerPoint.Table }[] = [];
   for (const shape of items) {
     if ((shape as any).type === PowerPoint.ShapeType.table) {
-      try { tableJobs.push({ id: String(shape.id), tbl: shape.getTable() }); }
-      catch (e) { log("getTable error", { where, id: shape.id, e }); }
+      try {
+        tableJobs.push({ id: String(shape.id), tbl: shape.getTable() });
+      } catch (e) {
+        log("table getTable error", { where, id: shape.id, e });
+      }
     }
   }
   if (tableJobs.length) {
@@ -152,38 +218,80 @@ async function collectFromAnyShapes(
     for (const { id, tbl } of tableJobs) {
       let pushed = false;
       try {
-        const vals = (tbl as any).values as string[][] | undefined;
-        if (Array.isArray(vals)) {
-          const text = vals.map(r => r.map(v => (v ?? "").trim()).join("\t")).join("\n").trim();
-          if (text) { out.push(text); pushed = true; log("table(values)", { where, id, rows: tbl.rowCount, cols: tbl.columnCount }); }
+        const values = (tbl as any).values as string[][] | undefined;
+        if (Array.isArray(values)) {
+          const text = values
+            .map((row) => row.map((v) => (v ?? "").trim()).join("\t"))
+            .join("\n")
+            .trim();
+          if (text) {
+            out.push(text);
+            pushed = true;
+            log("table(values)", { where, id, rows: tbl.rowCount, cols: tbl.columnCount });
+          }
         }
-      } catch { /* fall back */ }
+      } catch {
+        /* fall through */
+      }
 
+      // Fallback: cell-by-cell
       if (!pushed && typeof tbl.rowCount === "number" && typeof tbl.columnCount === "number") {
-        const rows: string[] = [];
+        const lines: string[] = [];
         for (let r = 0; r < tbl.rowCount; r++) {
-          // load all cells in row, then read
-          for (let c = 0; c < tbl.columnCount; c++) tbl.getCellOrNullObject(r, c).load("text");
-          await ctx.sync();
-          const row: string[] = [];
-          for (let c = 0; c < tbl.columnCount; c++) row.push((tbl.getCellOrNullObject(r, c).text ?? "").trim());
-          rows.push(row.join("\t"));
+          // batch-load the row cells
+          for (let c = 0; c < tbl.columnCount; c++) {
+            tbl.getCellOrNullObject(r, c).load("text");
+          }
+          await ctx.sync(); // load that row
+
+          const cells: string[] = [];
+          for (let c = 0; c < tbl.columnCount; c++) {
+            cells.push((tbl.getCellOrNullObject(r, c).text ?? "").trim());
+          }
+          lines.push(cells.join("\t"));
         }
-        const t = rows.join("\n").trim();
-        if (t) { out.push(t); log("table(cells)", { where, rows: tbl.rowCount, cols: tbl.columnCount }); }
+        const text = lines.join("\n").trim();
+        if (text) {
+          out.push(text);
+          log("table(cells)", { where, id, rows: tbl.rowCount, cols: tbl.columnCount });
+        }
       }
     }
   }
 
-  // 3) Groups (recurse)
+  // 3) Groups (recursive if possible)
   const groups: PowerPoint.ShapeScopedCollection[] = [];
   for (const shape of items) {
     if ((shape as any).type === PowerPoint.ShapeType.group) {
-      try { groups.push(shape.group.shapes); }
-      catch (e) { log("group error", { where, id: shape.id, e }); }
+      try {
+        // Preview/newer requirement sets:
+        // Shape → shape.group.shapes → ShapeScopedCollection
+        const inner = (shape as any).group?.shapes;
+        if (inner) {
+          groups.push(inner);
+        } else {
+          log("GROUP_UNREADABLE", { where, id: shape.id, note: "No group.shapes on this build" });
+        }
+      } catch (e) {
+        log("GROUP_UNREADABLE", { where, id: shape.id, e });
+      }
     }
   }
   for (const g of groups) {
-    await collectFromAnyShapes(g, out, ctx, log, `${where}::group`);
+    // preload for nested collection & recurse
+    g.load(
+      "count," +
+        "items/id,items/name,items/type," +
+        "items/textFrame/hasText,items/textFrame/textRange/text"
+    );
+    await ctx.sync();
+    await collectFromShapeCollection(g, out, ctx, log, `${where}::group`);
   }
+}
+
+/** helper: optionally cap output length */
+function maybeCap(text: string, cap: number | undefined, log: (...args: any[]) => void, where: string) {
+  if (!cap || text.length <= cap) return text;
+  log("TRUNCATED", { where, from: text.length, to: cap });
+  return text.slice(0, cap) + "\n\n[TRUNCATED]";
 }
