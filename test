@@ -1,6 +1,1 @@
-Windows Registry Editor Version 5.00
 
-[HKEY_CURRENT_USER\Software\Microsoft\Office\16.0\WEF\TrustedCatalogs\{dac64749-6e91-4e91-8e91-4e914e914e91}]
-"Id"="{dac64749-6e91-4e91-8e91-4e914e914e91}"
-"Url"="C:\\Users\\e37296\\AddIns"
-"Flags"=dword:00000001
