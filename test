@@ -1,33 +1,58 @@
 export async function getPptSelectedTextOrShape(): Promise<string> {
+  console.log("=== Starting getPptSelectedTextOrShape ===");
+
+  // PRIORITY 1: Try Common API for selected text (works better with table cells)
+  console.log("Step 1: Trying Common API getSelectedDataAsync...");
+  
+  const commonApiResult = await new Promise<string>((resolve) => {
+    Office.context.document.getSelectedDataAsync(
+      Office.CoercionType.Text,
+      (result) => {
+        console.log("Common API status:", result.status);
+        console.log("Common API value:", result.value);
+        
+        if (result.status === Office.AsyncResultStatus.Succeeded && result.value) {
+          const text = result.value.trim();
+          if (text) {
+            console.log("✅ Common API returned text:", text);
+            resolve(text);
+            return;
+          }
+        }
+        console.log("⚠️ Common API didn't return text");
+        resolve("");
+      }
+    );
+  });
+
+  if (commonApiResult) {
+    console.log("✅ Returning text from Common API");
+    return commonApiResult;
+  }
+
+  // PRIORITY 2: Try PowerPoint-specific API for text range
+  console.log("\nStep 2: Trying PowerPoint API getSelectedTextRange...");
+  
   return PowerPoint.run(async (context) => {
     const pres = context.presentation;
-
-    console.log("=== Starting getPptSelectedTextOrShape ===");
-
-    // PRIORITY 1: Check for selected text range FIRST (including in table cells)
-    console.log("Step 1: Checking for selected text range...");
     
     try {
       const selectedText = pres.getSelectedTextRange();
       selectedText.load("text,start,length");
       await context.sync();
       
-      console.log("selectedText.text:", selectedText.text);
-      console.log("selectedText.start:", selectedText.start);
-      console.log("selectedText.length:", selectedText.length);
+      console.log("PowerPoint API text:", selectedText.text);
       
-      if (selectedText.text !== undefined && selectedText.text !== null && selectedText.text.trim() !== "") {
-        console.log("✅ Returning selected text:", selectedText.text.trim());
+      if (selectedText.text && selectedText.text.trim() !== "") {
+        console.log("✅ Returning text from PowerPoint API");
         return selectedText.text.trim();
-      } else {
-        console.log("⚠️ Selected text exists but text property is null/empty");
       }
     } catch (error) {
-      console.log("⚠️ No text range selected, error:", error.message);
+      console.log("⚠️ PowerPoint API error:", error.message);
     }
 
-    // PRIORITY 2: Only if no text range, then check for selected shapes
-    console.log("\nStep 2: Checking for selected shapes...");
+    // PRIORITY 3: Check for selected shapes
+    console.log("\nStep 3: Checking for selected shapes...");
     const selectedShapes = pres.getSelectedShapes();
     selectedShapes.load("items/type,id,name");
     await context.sync();
@@ -39,7 +64,6 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
       return "";
     }
 
-    // Log each selected shape
     selectedShapes.items.forEach((shape, index) => {
       console.log(`Shape ${index}:`, {
         type: shape.type,
@@ -50,7 +74,6 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
 
     const parts: string[] = [];
 
-    // Walk through selected shapes and collect text
     async function collectFromShapes(scoped: PowerPoint.ShapeScopedCollection) {
       console.log("\n--- Entering collectFromShapes ---");
       scoped.load("items/type,id,name");
@@ -64,7 +87,7 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
         console.log(`Processing shape: ${shape.name}, type: ${shape.type}`);
         
         if (shape.type === PowerPoint.ShapeType.group) {
-          console.log("  → Shape is a group, will recurse");
+          console.log("  → Shape is a group");
           const inner = shape.group.shapes;
           toRecurse.push(inner);
         } else if (shape.type === PowerPoint.ShapeType.table) {
@@ -73,7 +96,7 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
           table.load("values,rowCount,columnCount");
           tables.push(table);
         } else {
-          console.log("  → Shape is other type, checking for text frame");
+          console.log("  → Checking for text frame");
           const tf = shape.getTextFrameOrNullObject();
           tf.load("hasText,textRange/text");
           frames.push(tf);
@@ -83,62 +106,32 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
       await context.sync();
 
       // Get text frames
-      console.log(`\nProcessing ${frames.length} text frames...`);
       for (const tf of frames) {
         if (!tf.isNullObject && tf.hasText && typeof tf.textRange.text === "string") {
           const t = (tf.textRange.text || "").trim();
-          console.log("  Text frame content:", t);
           if (t) parts.push(t);
         }
       }
 
       // Get tables
-      console.log(`\nProcessing ${tables.length} tables...`);
       for (const tbl of tables) {
-        console.log("  Table detected, extracting data...");
         if (Array.isArray(tbl.values)) {
-          console.log("  Table has values array");
           const t = tbl.values.map(row => row.join("\t")).join("\n").trim();
-          console.log("  Table content length:", t.length);
-          console.log("  Table content preview:", t.substring(0, 100));
           if (t) parts.push(t);
-        } else {
-          console.log("  Table values not array, reading cells manually");
-          if (typeof tbl.rowCount === "number" && typeof tbl.columnCount === "number") {
-            console.log(`  Table dimensions: ${tbl.rowCount}x${tbl.columnCount}`);
-            const cellTexts: string[] = [];
-            for (let r = 0; r < tbl.rowCount; r++) {
-              const rowVals: string[] = [];
-              for (let c = 0; c < tbl.columnCount; c++) {
-                const cell = tbl.getCellOrNullObject(r, c);
-                cell.load("text");
-                await context.sync();
-                rowVals.push(cell.text ?? "");
-              }
-              cellTexts.push(rowVals.join("\t"));
-            }
-            const t = cellTexts.join("\n").trim();
-            console.log("  Manual cell extraction length:", t.length);
-            if (t) parts.push(t);
-          }
         }
       }
 
       // Recurse into groups
-      console.log(`\nRecursing into ${toRecurse.length} groups...`);
       for (const inner of toRecurse) {
         await collectFromShapes(inner);
       }
-      
-      console.log("--- Exiting collectFromShapes ---\n");
     }
 
     await collectFromShapes(selectedShapes);
 
     console.log("\n=== Final Result ===");
     console.log("Total parts collected:", parts.length);
-    console.log("Combined result length:", parts.join("\n\n").length);
-    console.log("Result preview:", parts.join("\n\n").substring(0, 200));
+    console.log("Result:", parts.join("\n\n"));
     console.log("=== End ===\n");
 
     return parts.join("\n\n");
