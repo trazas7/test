@@ -2,23 +2,25 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
   return PowerPoint.run(async (context) => {
     const pres = context.presentation;
 
-    // NEW: Check if cursor is active in a text frame (including table cells)
+    // First, try to get selected text range (works for text in shapes AND table cells)
     try {
-      const activeCell = pres.getSelectedTextRange();
-      activeCell.load("text");
+      const textRange: PowerPoint.TextRange = context.presentation.getSelectedTextRange();
+      textRange.load("text");
       await context.sync();
-      if (activeCell && activeCell.text) {
-        return activeCell.text.trim();
+      
+      if (textRange && textRange.text) {
+        // This will get the selected text, including from table cells
+        return textRange.text.trim();
       }
-    } catch (e) {
-      // No active text selection, continue with other checks
+    } catch (error) {
+      console.log("No text range selected, checking for selected shapes...");
     }
 
-    // 1) If the user has a text selection, return it.
-    const selectedText = pres.getSelectedTextRangeOrNullObject();
+    // Fallback: If no text range, check if shapes are selected
+    const selectedShapes = pres.getSelectedShapes();
+    selectedShapes.load("items/type,id,name");
     await context.sync();
-    if (!selectedText.isNullObject) {
-      selectedText.load("text");
-      await context.sync();
-      return (selectedText.text ?? "").trim();
-    }
+    
+    if (selectedShapes.items.length === 0) return "";
+
+    const parts: string[] = [];
