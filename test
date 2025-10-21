@@ -6,26 +6,24 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
 
     // PRIORITY 1: Check for selected text range FIRST (including in table cells)
     console.log("Step 1: Checking for selected text range...");
-    const selectedText = pres.getSelectedTextRangeOrNullObject();
-    await context.sync();
     
-    console.log("selectedText.isNullObject:", selectedText.isNullObject);
-    
-    if (!selectedText.isNullObject) {
-      selectedText.load("text");
+    try {
+      const selectedText = pres.getSelectedTextRange();
+      selectedText.load("text,start,length");
       await context.sync();
-      console.log("selectedText.text:", selectedText.text);
-      console.log("selectedText.text length:", selectedText.text?.length);
-      console.log("selectedText.text trimmed:", selectedText.text?.trim());
       
-      if (selectedText.text && selectedText.text.trim() !== "") {
+      console.log("selectedText.text:", selectedText.text);
+      console.log("selectedText.start:", selectedText.start);
+      console.log("selectedText.length:", selectedText.length);
+      
+      if (selectedText.text !== undefined && selectedText.text !== null && selectedText.text.trim() !== "") {
         console.log("✅ Returning selected text:", selectedText.text.trim());
         return selectedText.text.trim();
       } else {
-        console.log("⚠️ Selected text exists but is empty or whitespace");
+        console.log("⚠️ Selected text exists but text property is null/empty");
       }
-    } else {
-      console.log("⚠️ No text range selected (isNullObject = true)");
+    } catch (error) {
+      console.log("⚠️ No text range selected, error:", error.message);
     }
 
     // PRIORITY 2: Only if no text range, then check for selected shapes
