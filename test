@@ -1,231 +1,121 @@
 /**
- * Main function to get selected text or shape content from PowerPoint
- * Priority order:
- * 1. Selected text (including in table cells) - Common API
- * 2. Selected text range - PowerPoint API
- * 3. Selected shapes/tables
- * 4. Entire presentation if nothing selected
+ * Returns the selected text if any; otherwise the textual content of the
+ * selected shapes (including grouped shapes and tables).
+ *
+ * Priority:
+ *  1) Common Office API selected text (works well with table cells)
+ *  2) PowerPoint selected text range
+ *  3) Text from selected shapes (text frames, tables, and groups)
+ *
+ * Always resolves to a string (possibly empty).
  */
 export async function getPptSelectedTextOrShape(): Promise<string> {
-  console.log("=== Starting getPptSelectedTextOrShape ===");
-
-  // Try each method in priority order
-  const selectedText = await tryGetSelectedTextCommonApi();
-  if (selectedText) {
-    console.log("✅ Returning text from Common API");
-    return selectedText;
-  }
-
-  const selectedTextRange = await tryGetSelectedTextRangePowerPointApi();
-  if (selectedTextRange) {
-    console.log("✅ Returning text from PowerPoint API");
-    return selectedTextRange;
-  }
-
-  const selectedShapes = await tryGetSelectedShapes();
-  if (selectedShapes) {
-    console.log("✅ Returning content from selected shapes");
-    return selectedShapes;
-  }
-
-  // Nothing selected, get entire document
-  console.log("⚠️ Nothing selected, getting entire document...");
-  const entireDocument = await getEntireDocument();
-  console.log("✅ Returning entire document");
-  return entireDocument;
-}
-
-/**
- * Try to get selected text using Common Office API
- * This works best for text selected in table cells
- */
-async function tryGetSelectedTextCommonApi(): Promise<string> {
-  console.log("Step 1: Trying Common API getSelectedDataAsync...");
-
-  return new Promise<string>((resolve) => {
-    Office.context.document.getSelectedDataAsync(
-      Office.CoercionType.Text,
-      (result) => {
-        console.log("Common API status:", result.status);
-
-        if (result.status === Office.AsyncResultStatus.Succeeded && result.value) {
-          const text = result.value.trim();
-          console.log("Common API value:", text.substring(0, 100));
-          
-          if (text) {
-            resolve(text);
-            return;
+  // 1) Common API — fast & cross-host
+  const commonText = await new Promise<string>((resolve) => {
+    try {
+      Office.context.document.getSelectedDataAsync(
+        Office.CoercionType.Text,
+        (result) => {
+          if (
+            result &&
+            result.status === Office.AsyncResultStatus.Succeeded &&
+            typeof result.value === "string"
+          ) {
+            resolve(result.value.trim() || "");
+          } else {
+            resolve("");
           }
         }
-        
-        console.log("⚠️ Common API didn't return text");
-        resolve("");
-      }
-    );
+      );
+    } catch {
+      resolve("");
+    }
   });
-}
 
-/**
- * Try to get selected text using PowerPoint-specific API
- */
-async function tryGetSelectedTextRangePowerPointApi(): Promise<string> {
-  console.log("\nStep 2: Trying PowerPoint API getSelectedTextRange...");
+  if (commonText) return commonText;
 
-  try {
-    return await PowerPoint.run(async (context) => {
-      const selectedText = context.presentation.getSelectedTextRange();
-      selectedText.load("text");
+  // 2) PowerPoint-specific fallback
+  return PowerPoint.run(async (context) => {
+    const pres = context.presentation;
+
+    // 2a) Use an explicitly selected text range if available
+    try {
+      const range = pres.getSelectedTextRange();
+      range.load("text");
       await context.sync();
 
-      if (selectedText.text && selectedText.text.trim()) {
-        console.log("PowerPoint API text:", selectedText.text.substring(0, 100));
-        return selectedText.text.trim();
+      if (range && typeof range.text === "string" && range.text.trim()) {
+        return range.text.trim();
       }
-
-      return "";
-    });
-  } catch (error) {
-    console.log("⚠️ PowerPoint API error:", error.message);
-    return "";
-  }
-}
-
-/**
- * Try to get content from selected shapes
- */
-async function tryGetSelectedShapes(): Promise<string> {
-  console.log("\nStep 3: Checking for selected shapes...");
-
-  try {
-    return await PowerPoint.run(async (context) => {
-      const selectedShapes = context.presentation.getSelectedShapes();
-      selectedShapes.load("items");
-      await context.sync();
-
-      if (selectedShapes.items.length === 0) {
-        console.log("⚠️ No shapes selected");
-        return "";
-      }
-
-      console.log(`Found ${selectedShapes.items.length} selected shapes`);
-      const content = await extractContentFromShapes(selectedShapes, context);
-      return content;
-    });
-  } catch (error) {
-    console.log("⚠️ Error getting selected shapes:", error.message);
-    return "";
-  }
-}
-
-/**
- * Get content from the entire presentation when nothing is selected
- */
-async function getEntireDocument(): Promise<string> {
-  console.log("\nStep 4: Getting entire document...");
-
-  return await PowerPoint.run(async (context) => {
-    const slides = context.presentation.slides;
-    slides.load("items");
-    await context.sync();
-
-    console.log(`Processing ${slides.items.length} slides...`);
-    const allContent: string[] = [];
-
-    for (let i = 0; i < slides.items.length; i++) {
-      const slide = slides.items[i];
-      slide.load("shapes");
-      await context.sync();
-
-      console.log(`Slide ${i + 1}: ${slide.shapes.items.length} shapes`);
-      
-      const slideContent = await extractContentFromShapes(slide.shapes, context);
-      if (slideContent) {
-        allContent.push(`--- Slide ${i + 1} ---\n${slideContent}`);
-      }
+    } catch {
+      // Ignore and continue to shapes fallback
     }
 
-    return allContent.join("\n\n");
-  });
-}
-
-/**
- * Extract text content from a collection of shapes
- */
-async function extractContentFromShapes(
-  shapesCollection: PowerPoint.ShapeScopedCollection | PowerPoint.ShapeCollection,
-  context: PowerPoint.RequestContext
-): Promise<string> {
-  const parts: string[] = [];
-
-  async function processShapes(shapes: any) {
-    shapes.load("items/type,id,name");
+    // 3) Gather text from selected shapes
+    const selected = pres.getSelectedShapes();
+    selected.load("items/type");
     await context.sync();
 
-    const textFrames: PowerPoint.TextFrame[] = [];
-    const tables: PowerPoint.Table[] = [];
-    const groups: any[] = [];
+    if (!selected.items || selected.items.length === 0) return "";
 
-    // Categorize shapes
-    for (const shape of shapes.items) {
-      console.log(`  Processing: ${shape.name} (${shape.type})`);
+    const parts: string[] = [];
 
-      if (shape.type === PowerPoint.ShapeType.group) {
-        groups.push(shape.group.shapes);
-      } else if (shape.type === PowerPoint.ShapeType.table) {
-        const table = shape.getTable();
-        table.load("values,rowCount,columnCount");
-        tables.push(table);
-      } else {
-        const tf = shape.getTextFrameOrNullObject();
-        tf.load("hasText,textRange/text");
-        textFrames.push(tf);
-      }
-    }
+    async function collectFromShapes(
+      scope: PowerPoint.ShapeScopedCollection
+    ): Promise<void> {
+      scope.load("items/type");
+      await context.sync();
 
-    await context.sync();
+      const frames: PowerPoint.TextFrame[] = [];
+      const tables: PowerPoint.Table[] = [];
+      const groups: PowerPoint.ShapeScopedCollection[] = [];
 
-    // Extract text from text frames
-    for (const tf of textFrames) {
-      if (!tf.isNullObject && tf.hasText && tf.textRange.text) {
-        const text = tf.textRange.text.trim();
-        if (text) {
-          parts.push(text);
+      for (const shape of scope.items) {
+        if (shape.type === PowerPoint.ShapeType.group) {
+          groups.push(shape.group.shapes);
+        } else if (shape.type === PowerPoint.ShapeType.table) {
+          const tbl = shape.getTable();
+          // We only need values for simple extraction
+          tbl.load("values");
+          tables.push(tbl);
+        } else {
+          const tf = shape.getTextFrameOrNullObject();
+          tf.load("hasText,textRange/text");
+          frames.push(tf);
         }
       }
-    }
 
-    // Extract text from tables
-    for (const table of tables) {
-      const tableText = extractTableContent(table);
-      if (tableText) {
-        parts.push(tableText);
+      await context.sync();
+
+      // Text frames
+      for (const tf of frames) {
+        if (
+          !tf.isNullObject &&
+          tf.hasText &&
+          tf.textRange &&
+          typeof tf.textRange.text === "string"
+        ) {
+          const t = tf.textRange.text.trim();
+          if (t) parts.push(t);
+        }
+      }
+
+      // Tables (values is a 2D array of strings when available)
+      for (const tbl of tables) {
+        const values = (tbl as unknown as { values?: string[][] }).values;
+        if (Array.isArray(values)) {
+          const t = values.map((row) => row.join("\t")).join("\n").trim();
+          if (t) parts.push(t);
+        }
+      }
+
+      // Recurse into groups
+      for (const inner of groups) {
+        await collectFromShapes(inner);
       }
     }
 
-    // Recurse into groups
-    for (const groupShapes of groups) {
-      await processShapes(groupShapes);
-    }
-  }
-
-  await processShapes(shapesCollection);
-  return parts.join("\n\n");
-}
-
-/**
- * Extract content from a table
- */
-function extractTableContent(table: PowerPoint.Table): string {
-  if (!Array.isArray(table.values)) {
-    console.log("  ⚠️ Table values not available");
-    return "";
-  }
-
-  const tableText = table.values
-    .map(row => row.join("\t"))
-    .join("\n")
-    .trim();
-
-  console.log(`  Table: ${tableText.length} characters`);
-  return tableText;
+    await collectFromShapes(selected);
+    return parts.join("\n\n");
+  });
 }
