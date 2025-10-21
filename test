@@ -2,29 +2,59 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
   return PowerPoint.run(async (context) => {
     const pres = context.presentation;
 
+    console.log("=== Starting getPptSelectedTextOrShape ===");
+
     // PRIORITY 1: Check for selected text range FIRST (including in table cells)
+    console.log("Step 1: Checking for selected text range...");
     const selectedText = pres.getSelectedTextRangeOrNullObject();
     await context.sync();
+    
+    console.log("selectedText.isNullObject:", selectedText.isNullObject);
     
     if (!selectedText.isNullObject) {
       selectedText.load("text");
       await context.sync();
+      console.log("selectedText.text:", selectedText.text);
+      console.log("selectedText.text length:", selectedText.text?.length);
+      console.log("selectedText.text trimmed:", selectedText.text?.trim());
+      
       if (selectedText.text && selectedText.text.trim() !== "") {
+        console.log("✅ Returning selected text:", selectedText.text.trim());
         return selectedText.text.trim();
+      } else {
+        console.log("⚠️ Selected text exists but is empty or whitespace");
       }
+    } else {
+      console.log("⚠️ No text range selected (isNullObject = true)");
     }
 
     // PRIORITY 2: Only if no text range, then check for selected shapes
+    console.log("\nStep 2: Checking for selected shapes...");
     const selectedShapes = pres.getSelectedShapes();
     selectedShapes.load("items/type,id,name");
     await context.sync();
     
-    if (selectedShapes.items.length === 0) return "";
+    console.log("Number of selected shapes:", selectedShapes.items.length);
+    
+    if (selectedShapes.items.length === 0) {
+      console.log("⚠️ No shapes selected");
+      return "";
+    }
+
+    // Log each selected shape
+    selectedShapes.items.forEach((shape, index) => {
+      console.log(`Shape ${index}:`, {
+        type: shape.type,
+        id: shape.id,
+        name: shape.name
+      });
+    });
 
     const parts: string[] = [];
 
     // Walk through selected shapes and collect text
     async function collectFromShapes(scoped: PowerPoint.ShapeScopedCollection) {
+      console.log("\n--- Entering collectFromShapes ---");
       scoped.load("items/type,id,name");
       await context.sync();
 
@@ -33,14 +63,19 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
       const toRecurse: PowerPoint.ShapeScopedCollection[] = [];
 
       for (const shape of scoped.items) {
+        console.log(`Processing shape: ${shape.name}, type: ${shape.type}`);
+        
         if (shape.type === PowerPoint.ShapeType.group) {
+          console.log("  → Shape is a group, will recurse");
           const inner = shape.group.shapes;
           toRecurse.push(inner);
         } else if (shape.type === PowerPoint.ShapeType.table) {
+          console.log("  → Shape is a table");
           const table = shape.getTable();
           table.load("values,rowCount,columnCount");
           tables.push(table);
         } else {
+          console.log("  → Shape is other type, checking for text frame");
           const tf = shape.getTextFrameOrNullObject();
           tf.load("hasText,textRange/text");
           frames.push(tf);
@@ -50,20 +85,29 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
       await context.sync();
 
       // Get text frames
+      console.log(`\nProcessing ${frames.length} text frames...`);
       for (const tf of frames) {
         if (!tf.isNullObject && tf.hasText && typeof tf.textRange.text === "string") {
           const t = (tf.textRange.text || "").trim();
+          console.log("  Text frame content:", t);
           if (t) parts.push(t);
         }
       }
 
       // Get tables
+      console.log(`\nProcessing ${tables.length} tables...`);
       for (const tbl of tables) {
+        console.log("  Table detected, extracting data...");
         if (Array.isArray(tbl.values)) {
+          console.log("  Table has values array");
           const t = tbl.values.map(row => row.join("\t")).join("\n").trim();
+          console.log("  Table content length:", t.length);
+          console.log("  Table content preview:", t.substring(0, 100));
           if (t) parts.push(t);
         } else {
+          console.log("  Table values not array, reading cells manually");
           if (typeof tbl.rowCount === "number" && typeof tbl.columnCount === "number") {
+            console.log(`  Table dimensions: ${tbl.rowCount}x${tbl.columnCount}`);
             const cellTexts: string[] = [];
             for (let r = 0; r < tbl.rowCount; r++) {
               const rowVals: string[] = [];
@@ -76,18 +120,28 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
               cellTexts.push(rowVals.join("\t"));
             }
             const t = cellTexts.join("\n").trim();
+            console.log("  Manual cell extraction length:", t.length);
             if (t) parts.push(t);
           }
         }
       }
 
       // Recurse into groups
+      console.log(`\nRecursing into ${toRecurse.length} groups...`);
       for (const inner of toRecurse) {
         await collectFromShapes(inner);
       }
+      
+      console.log("--- Exiting collectFromShapes ---\n");
     }
 
     await collectFromShapes(selectedShapes);
+
+    console.log("\n=== Final Result ===");
+    console.log("Total parts collected:", parts.length);
+    console.log("Combined result length:", parts.join("\n\n").length);
+    console.log("Result preview:", parts.join("\n\n").substring(0, 200));
+    console.log("=== End ===\n");
 
     return parts.join("\n\n");
   });
