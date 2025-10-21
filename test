@@ -2,21 +2,19 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
   return PowerPoint.run(async (context) => {
     const pres = context.presentation;
 
-    // First, try to get selected text range (works for text in shapes AND table cells)
-    try {
-      const textRange: PowerPoint.TextRange = context.presentation.getSelectedTextRange();
-      textRange.load("text");
+    // PRIORITY 1: Check for selected text range FIRST (including in table cells)
+    const selectedText = pres.getSelectedTextRangeOrNullObject();
+    await context.sync();
+    
+    if (!selectedText.isNullObject) {
+      selectedText.load("text");
       await context.sync();
-      
-      if (textRange && textRange.text) {
-        // This will get the selected text, including from table cells
-        return textRange.text.trim();
+      if (selectedText.text && selectedText.text.trim() !== "") {
+        return selectedText.text.trim();
       }
-    } catch (error) {
-      console.log("No text range selected, checking for selected shapes...");
     }
 
-    // Fallback: If no text range, check if shapes are selected
+    // PRIORITY 2: Only if no text range, then check for selected shapes
     const selectedShapes = pres.getSelectedShapes();
     selectedShapes.load("items/type,id,name");
     await context.sync();
@@ -24,3 +22,73 @@ export async function getPptSelectedTextOrShape(): Promise<string> {
     if (selectedShapes.items.length === 0) return "";
 
     const parts: string[] = [];
+
+    // Walk through selected shapes and collect text
+    async function collectFromShapes(scoped: PowerPoint.ShapeScopedCollection) {
+      scoped.load("items/type,id,name");
+      await context.sync();
+
+      const frames: PowerPoint.TextFrame[] = [];
+      const tables: PowerPoint.Table[] = [];
+      const toRecurse: PowerPoint.ShapeScopedCollection[] = [];
+
+      for (const shape of scoped.items) {
+        if (shape.type === PowerPoint.ShapeType.group) {
+          const inner = shape.group.shapes;
+          toRecurse.push(inner);
+        } else if (shape.type === PowerPoint.ShapeType.table) {
+          const table = shape.getTable();
+          table.load("values,rowCount,columnCount");
+          tables.push(table);
+        } else {
+          const tf = shape.getTextFrameOrNullObject();
+          tf.load("hasText,textRange/text");
+          frames.push(tf);
+        }
+      }
+
+      await context.sync();
+
+      // Get text frames
+      for (const tf of frames) {
+        if (!tf.isNullObject && tf.hasText && typeof tf.textRange.text === "string") {
+          const t = (tf.textRange.text || "").trim();
+          if (t) parts.push(t);
+        }
+      }
+
+      // Get tables
+      for (const tbl of tables) {
+        if (Array.isArray(tbl.values)) {
+          const t = tbl.values.map(row => row.join("\t")).join("\n").trim();
+          if (t) parts.push(t);
+        } else {
+          if (typeof tbl.rowCount === "number" && typeof tbl.columnCount === "number") {
+            const cellTexts: string[] = [];
+            for (let r = 0; r < tbl.rowCount; r++) {
+              const rowVals: string[] = [];
+              for (let c = 0; c < tbl.columnCount; c++) {
+                const cell = tbl.getCellOrNullObject(r, c);
+                cell.load("text");
+                await context.sync();
+                rowVals.push(cell.text ?? "");
+              }
+              cellTexts.push(rowVals.join("\t"));
+            }
+            const t = cellTexts.join("\n").trim();
+            if (t) parts.push(t);
+          }
+        }
+      }
+
+      // Recurse into groups
+      for (const inner of toRecurse) {
+        await collectFromShapes(inner);
+      }
+    }
+
+    await collectFromShapes(selectedShapes);
+
+    return parts.join("\n\n");
+  });
+}
