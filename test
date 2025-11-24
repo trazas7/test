@@ -1,0 +1,22 @@
+SELECT
+    'SELECT *
+     FROM contact
+     WHERE enablement_contact_id IN (' ||
+    LISTAGG(id_str, ', ')
+      WITHIN GROUP (ORDER BY contact_id)
+    || ');' AS generated_sql
+FROM (
+    SELECT
+        contact_id,
+        '''' || contact_id || '''' AS id_str,
+        CEIL(ROW_NUMBER() OVER (ORDER BY contact_id) / 1000) AS grp
+    FROM (
+        SELECT DISTINCT s.contact_id
+        FROM subscription_tag_value stv
+        JOIN subscription s
+          ON stv.subscription_id = s.id
+        WHERE LOWER(stv.tag)   = 'publication type'
+          AND LOWER(stv.value) = 'global outlook'
+    )
+)
+GROUP BY grp;
