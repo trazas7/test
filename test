@@ -2,15 +2,15 @@ SELECT
     'SELECT *
      FROM contact
      WHERE enablement_contact_id IN (' ||
-    LISTAGG(id_str, ', ')
-      WITHIN GROUP (ORDER BY contact_id)
-    || ');' AS generated_sql
+    LISTAGG(quoted_id, ', ') WITHIN GROUP (ORDER BY contact_id) ||
+    ');' AS generated_sql
 FROM (
     SELECT
         contact_id,
-        '''' || contact_id || '''' AS id_str,
+        '''' || contact_id || '''' AS quoted_id,
         CEIL(ROW_NUMBER() OVER (ORDER BY contact_id) / 1000) AS grp
     FROM (
+        -- your original query that gets the IDs
         SELECT DISTINCT s.contact_id
         FROM subscription_tag_value stv
         JOIN subscription s
@@ -19,4 +19,5 @@ FROM (
           AND LOWER(stv.value) = 'global outlook'
     )
 )
-GROUP BY grp;
+GROUP BY grp
+ORDER BY grp;
