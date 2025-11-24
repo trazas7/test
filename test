@@ -1,1 +1,18 @@
+SELECT DISTINCT pub.*
+FROM fidataadm.publication pub
+JOIN fidataadm.publication_has_tag_value phtv1 
+    ON pub.id = phtv1.publication_id
+JOIN fidataadm.tag_type tt1 
+    ON phtv1.tag_type_id = tt1.id
+JOIN fidataadm.publication_has_tag_value phtv2 
+    ON pub.id = phtv2.publication_id
+JOIN fidataadm.tag_type tt2 
+    ON phtv2.tag_type_id = tt2.id
+WHERE pub.status = 3
+    AND pub.publish_date_utc BETWEEN TO_DATE('01-JAN-25', 'DD-MON-YY') 
+                                 AND TO_DATE('31-DEC-25', 'DD-MON-YY')
+    AND tt1.name = 'Suitable_for_Corporates'
+    AND phtv1.tag_value = 'YES'
+    AND tt2.column_name = 'bnpp_asset_class'
+    AND phtv2.tag_value = 'Commodities';
 
