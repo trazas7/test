@@ -1,12 +1,23 @@
-<!-- show ALL sub-tags for this asset class header, but highlight only selected ones -->
-<div class="right-panel"
-     *ngIf="selectedThemes[header.key]?.size > 0 && selectedHeader != header">
-  <div class="button-container"
-       *ngFor="let sub of toArray(getSubTheme(header.key))">
-    <button class="box-right selSubTheme"
-            [ngClass]="{ 'selected': selectedThemes[header.key]?.has(sub) }"
-            (click)="onThemesValueClick(sub, header.key, 'Asset Class')">
-      {{ sub }}
-    </button>
-  </div>
+<div class="info-label">
+    <span class="info-icon">ℹ️</span>
+    Select a section of text and I’ll work on it.  
+    If none is selected, I’ll process the full document.
 </div>
+
+.info-label {
+    background-color: #F0FAFF;
+    border-left: 5px solid #1AA48C;
+    padding: 10px 12px;
+    margin: 15px 0;
+    font-size: 13px;
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    color: #333;
+    border-radius: 4px;
+}
+
+.info-icon {
+    font-size: 18px;
+    line-height: 1;
+}
