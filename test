@@ -1,83 +1,12 @@
-// Returns true if ALL child tags for this theme are currently selected
-isAllSelectedForTheme(themeKey: string): boolean {
-  const themeTag = this.tags.find((t: any) => t.value === themeKey);
-  if (!themeTag || !themeTag.childMappingId) {
-    return false;
-  }
-
-  const total = themeTag.childMappingId.length;
-  const sel = this.selectedThemes[themeKey];
-  return !!sel && sel.size === total && total > 0;
-}
-
-
-onThemesValueClick(sub: string, key: string, category?: string) {
-  console.log('onThemesValueClick', key, sub);
-
-  if (!this.selectedThemes[key]) {
-    this.selectedThemes[key] = new Set<string>();
-  }
-
-  const isAll = (sub === Constants.FASTTRACK_ALL);
-
-  if (isAll) {
-    // --- user clicked ALL for this theme ---
-    const themeTag = this.tags.find((t: any) => t.value === key);
-    if (!themeTag || !themeTag.childMappingId) {
-      return;
-    }
-
-    const total = themeTag.childMappingId.length;
-    const sel = this.selectedThemes[key];
-
-    if (sel.size === total) {
-      // Scenario 2: ALL was already fully selected -> deselect everything
-      sel.clear();
-    } else {
-      // Scenario 1: select ALL children
-      sel.clear();
-      themeTag.childMappingId.forEach((childId: any) => {
-        const childTag = this.tags.find((x: any) => x.parentMappingId === childId);
-        if (childTag) {
-          sel.add(childTag.value);
-        }
-      });
-    }
-  } else {
-    // --- user clicked a single child tag ---
-    const sel = this.selectedThemes[key];
-
-    if (sel.has(sub)) {
-      sel.delete(sub);
-    } else {
-      sel.add(sub);
-    }
-
-    // No need to touch ALL directly; its highlight is derived with isAllSelectedForTheme()
-  }
-
-  // keep any existing side-effects AFTER your selection logic
-  if (!this.isShortCut) {
-    this.toggleAsset(key, this.selectedThemes[key] && this.selectedThemes[key].size > 0);
-  }
-
-  this.totSelectedThemes();
-  // if you have asset-class sync, call it here:
-  // this.recomputeAssetClasses();
-}
-
-<!-- Example inside your theme row -->
-<button
-  class="tag"
-  [ngClass]="{ 'selected': isAllSelectedForTheme(theme.value) }"
-  (click)="onThemesValueClick(Constants.FASTTRACK_ALL, theme.value)">
-  ALL
-</button>
-
-
-<button
-  class="tag"
-  [ngClass]="{ 'selected': selectedThemes[theme.value]?.has(child.value) }"
-  (click)="onThemesValueClick(child.value, theme.value)">
-  {{ child.label }}
-</button>
+<!-- show ALL sub-tags for this asset class header, but highlight only selected ones -->
+<div class="right-panel"
+     *ngIf="selectedThemes[header.key]?.size > 0 && selectedHeader != header">
+  <div class="button-container"
+       *ngFor="let sub of toArray(getSubTheme(header.key))">
+    <button class="box-right selSubTheme"
+            [ngClass]="{ 'selected': selectedThemes[header.key]?.has(sub) }"
+            (click)="onThemesValueClick(sub, header.key, 'Asset Class')">
+      {{ sub }}
+    </button>
+  </div>
+</div>
