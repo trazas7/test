@@ -1,0 +1,42 @@
+startResize(event: MouseEvent | TouchEvent) {
+  event.preventDefault();
+  this.dragging = true;
+  
+  // Cache screen width once
+  this.screenWidth = window.innerWidth;
+  
+  // Store initial mouse/touch position
+  const clientX = event instanceof MouseEvent ? event.clientX : event.touches[0].clientX;
+  
+  // Get current left position in pixels
+  const rect = (event.target as HTMLElement).closest('.drag-handle')?.parentElement?.getBoundingClientRect();
+  this.initialX = clientX;
+  this.currentLeft = rect?.left || 0;
+}
+
+onMouseMove(event: MouseEvent | TouchEvent) {
+  if (!this.dragging) return;
+  
+  const clientX = event instanceof MouseEvent ? event.clientX : event.touches[0].clientX;
+  
+  // Calculate delta from initial position
+  const deltaX = clientX - this.initialX;
+  
+  // Calculate new position in pixels
+  let newLeft = this.currentLeft + deltaX;
+  
+  // Add boundaries (optional)
+  const maxLeft = this.screenWidth - 400; // assuming window width ~400px
+  newLeft = Math.max(0, Math.min(newLeft, maxLeft));
+  
+  // Convert to percentage only once for setting
+  const leftPercent = (newLeft / this.screenWidth) * 100;
+  const rightPercent = 100 - leftPercent;
+  
+  // Clamp between 25% and 50%
+  const clampedRight = Math.min(Math.max(rightPercent, 25), 50);
+  const clampedLeft = 100 - clampedRight;
+  
+  this.leftWidth = clampedLeft;
+  this.rightWidth = clampedRight;
+}
