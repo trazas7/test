@@ -2,41 +2,71 @@ startResize(event: MouseEvent | TouchEvent) {
   event.preventDefault();
   this.dragging = true;
   
-  // Cache screen width once
-  this.screenWidth = window.innerWidth;
+  // Use requestAnimationFrame for smooth updates
+  const handleMove = (e: MouseEvent | TouchEvent) => {
+    if (!this.dragging) return;
+    
+    requestAnimationFrame(() => {
+      this.handleResize(e);
+    });
+  };
   
-  // Store initial mouse/touch position
-  const clientX = event instanceof MouseEvent ? event.clientX : event.touches[0].clientX;
+  const handleEnd = () => {
+    this.dragging = false;
+    document.removeEventListener('mousemove', handleMove);
+    document.removeEventListener('mouseup', handleEnd);
+    document.removeEventListener('touchmove', handleMove);
+    document.removeEventListener('touchend', handleEnd);
+  };
   
-  // Get current left position in pixels
-  const rect = (event.target as HTMLElement).closest('.drag-handle')?.parentElement?.getBoundingClientRect();
-  this.initialX = clientX;
-  this.currentLeft = rect?.left || 0;
+  document.addEventListener('mousemove', handleMove);
+  document.addEventListener('mouseup', handleEnd);
+  document.addEventListener('touchmove', handleMove);
+  document.addEventListener('touchend', handleEnd);
 }
 
-onMouseMove(event: MouseEvent | TouchEvent) {
+handleResize(event: MouseEvent | TouchEvent) {
   if (!this.dragging) return;
   
   const clientX = event instanceof MouseEvent ? event.clientX : event.touches[0].clientX;
+  const screenWidth = window.innerWidth;
   
-  // Calculate delta from initial position
-  const deltaX = clientX - this.initialX;
+  let leftPercent = (clientX / screenWidth) * 100;
+  let rightPercent = 100 - leftPercent;
   
-  // Calculate new position in pixels
-  let newLeft = this.currentLeft + deltaX;
+  // Constrain percentages with min/max bounds
+  const minPercent = 20;
+  const maxPercent = 80;
   
-  // Add boundaries (optional)
-  const maxLeft = this.screenWidth - 400; // assuming window width ~400px
-  newLeft = Math.max(0, Math.min(newLeft, maxLeft));
+  leftPercent = Math.max(minPercent, Math.min(leftPercent, maxPercent));
+  rightPercent = 100 - leftPercent;
   
-  // Convert to percentage only once for setting
-  const leftPercent = (newLeft / this.screenWidth) * 100;
-  const rightPercent = 100 - leftPercent;
-  
-  // Clamp between 25% and 50%
-  const clampedRight = Math.min(Math.max(rightPercent, 25), 50);
-  const clampedLeft = 100 - clampedRight;
-  
-  this.leftWidth = clampedLeft;
-  this.rightWidth = clampedRight;
+  // Use CSS custom properties for smoother updates
+  this.leftWidth = leftPercent;
+  this.rightWidth = rightPercent;
 }
+
+
+.left-pane, .right-pane {
+  transition: none; /* Remove transitions during drag */
+  will-change: width; /* Hint to browser for optimization */
+}
+
+.drag-handle {
+  cursor: ew-resize;
+  user-select: none;
+  touch-action: none; /* Prevent scrolling on touch devices */
+}
+
+/* Add active state */
+.drag-handle.active {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+
+<div class="drag-handle" 
+     [class.active]="dragging"
+     (mousedown)="startResize($event)"
+     (touchstart)="startResize($event)">
+  <img src="assets/icons/chat_drag.svg" class="drag-icon">
+</div>
