@@ -1,2 +1,0 @@
-
-npx -p @microsoft/m365agentstoolkit-cli atk install --xml-path "C:\Users\boul3\Documents\Personal\outlook-addin\outlook-addin-ai\manifest.xml" --interactive false
