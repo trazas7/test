@@ -1,0 +1,22 @@
+-- Option 1: Using a CTE with your list of 1000 user IDs
+WITH updated_user_list AS (
+  SELECT user_id
+  FROM (
+    VALUES 
+      (123),
+      (456),
+      (789)
+      -- ... paste all 1000 user IDs here
+  ) AS t(user_id)
+)
+SELECT u.user_id, 
+       u.last_modified_datetime,
+       CASE 
+         WHEN u.last_modified_datetime >= '2026-01-14 10:00:00' THEN 'Updated'
+         ELSE 'NOT Updated'
+       END as update_status
+FROM users u
+INNER JOIN updated_user_list ul ON u.user_id = ul.user_id
+WHERE u.last_modified_datetime < '2026-01-14 10:00:00'  -- Show only NOT updated
+   OR u.last_modified_datetime IS NULL
+ORDER BY u.user_id;
