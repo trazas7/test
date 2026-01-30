@@ -1,234 +1,363 @@
-CREATE TABLE UNSUBSCRIBE_FEEDBACK (
-  ID                 VARCHAR2(36) NOT NULL,
-  CONTACT_ID          VARCHAR2(64),
-  EMAIL              VARCHAR2(320) NOT NULL,
-  SOURCE             VARCHAR2(20)  NOT NULL,     -- 'BULK' or 'MMC'
-  REASON             VARCHAR2(2000),
+import { Component, OnInit } from '@angular/core';
+import { ActivatedRoute } from '@angular/router';
+import { ContentUnsubscribeService } from '../service/content-unsubscribe.service';
 
-  CREATED_BY          VARCHAR2(128),
-  CREATED_DATE        TIMESTAMP(6),
-  LAST_MODIFIED_BY    VARCHAR2(128),
-  LAST_MODIFIED_DATE  TIMESTAMP(6),
+type SourceType = 'BULK' | 'MMC' | '';
 
-  CONSTRAINT PK_UNSUBSCRIBE_FEEDBACK PRIMARY KEY (ID),
-  CONSTRAINT CK_UNSUB_FBK_SOURCE CHECK (SOURCE IN ('BULK','MMC'))
-);
+@Component({
+  selector: 'app-content-unsubscribe',
+  templateUrl: './content-unsubscribe.component.html',
+  styleUrls: ['./content-unsubscribe.component.scss']
+})
+export class ContentUnsubscribeComponent implements OnInit {
 
-CREATE INDEX IDX_UNSUB_FBK_EMAIL ON UNSUBSCRIBE_FEEDBACK (EMAIL);
-CREATE INDEX IDX_UNSUB_FBK_CONTACT ON UNSUBSCRIBE_FEEDBACK (CONTACT_ID);
-CREATE INDEX IDX_UNSUB_FBK_LMD ON UNSUBSCRIBE_FEEDBACK (LAST_MODIFIED_DATE);
+  public email: string = '';
+  public contactId: string = '';
+  public source: SourceType = '';
 
+  public pageLoading: boolean = true;
 
-package com.bnpparibas.gmrc.evolution.interest_manager_service.unsubscribe;
+  public isSubmitLoading: boolean = false;
 
-import com.bnpparibas.gmrc.evolution.starter.data.model.AbstractAuditEntity;
-import jakarta.persistence.*;
+  public isSaved: boolean = false;                // success
+  public alreadyUnsubscribed: boolean = false;    // already
+  public isError: boolean = false;
+  public errorMsg: string = '';
 
-@Entity
-@Table(name = "UNSUBSCRIBE_FEEDBACK")
-public class UnsubscribeFeedback extends AbstractAuditEntity {
+  constructor(
+    private readonly activatedRoute: ActivatedRoute,
+    private readonly contentUnsubscribeService: ContentUnsubscribeService
+  ) {}
 
-  @Column(name = "CONTACT_ID", length = 64)
-  private String contactId;
+  public ngOnInit(): void {
+    this.activatedRoute.queryParams.subscribe((params) => {
+      this.email = (params && params.email) ? String(params.email) : '';
+      this.contactId = (params && params.contactId) ? String(params.contactId) : '';
+      this.source = (params && params.source) ? (String(params.source).toUpperCase() as SourceType) : '';
 
-  @Column(name = "EMAIL", nullable = false, length = 320)
-  private String email;
+      // Basic validation (you can relax if needed)
+      if (!this.contactId || !this.source) {
+        this.pageLoading = false;
+        this.isError = true;
+        this.errorMsg = 'Missing contactId/source. Please use the unsubscribe link from the email.';
+        return;
+      }
 
-  @Column(name = "SOURCE", nullable = false, length = 20)
-  private String source; // BULK | MMC
+      // optional: if source is not BULK/MMC, block
+      if (this.source !== 'BULK' && this.source !== 'MMC') {
+        this.pageLoading = false;
+        this.isError = true;
+        this.errorMsg = 'Invalid source. Please use the unsubscribe link from the email.';
+        return;
+      }
 
-  @Column(name = "REASON", length = 2000)
-  private String reason;
-
-  public String getContactId() { return contactId; }
-  public void setContactId(String contactId) { this.contactId = contactId; }
-
-  public String getEmail() { return email; }
-  public void setEmail(String email) { this.email = email; }
-
-  public String getSource() { return source; }
-  public void setSource(String source) { this.source = source; }
-
-  public String getReason() { return reason; }
-  public void setReason(String reason) { this.reason = reason; }
-}
-
-package com.bnpparibas.gmrc.evolution.interest_manager_service.unsubscribe;
-
-public class UnsubscribeFeedbackRequest {
-  private String contactId;
-  private String email;
-  private String source;     // BULK | MMC
-  private String reason;     // optional
-
-  public String getContactId() { return contactId; }
-  public void setContactId(String contactId) { this.contactId = contactId; }
-
-  public String getEmail() { return email; }
-  public void setEmail(String email) { this.email = email; }
-
-  public String getSource() { return source; }
-  public void setSource(String source) { this.source = source; }
-
-  public String getReason() { return reason; }
-  public void setReason(String reason) { this.reason = reason; }
-}
-
-
-
-package com.bnpparibas.gmrc.evolution.interest_manager_service.unsubscribe;
-
-import java.util.Date;
-
-public class UnsubscribeFeedbackResponse {
-  private String id;
-  private String contactId;
-  private String email;
-  private String source;
-  private String reason;
-
-  private String createdBy;
-  private Date createdDate;
-  private String lastModifiedBy;
-  private Date lastModifiedDate;
-
-  public UnsubscribeFeedbackResponse(UnsubscribeFeedback e) {
-    this.id = e.getId();
-    this.contactId = e.getContactId();
-    this.email = e.getEmail();
-    this.source = e.getSource();
-    this.reason = e.getReason();
-
-    this.createdBy = e.getCreatedBy();
-    this.createdDate = e.getCreatedDate();
-    this.lastModifiedBy = e.getLastModifiedBy();
-    this.lastModifiedDate = e.getLastModifiedDate();
+      // Check if already unsubscribed -> if yes show message and stop
+      this.checkAlreadyUnsubscribed();
+    });
   }
 
-  public String getId() { return id; }
-  public String getContactId() { return contactId; }
-  public String getEmail() { return email; }
-  public String getSource() { return source; }
-  public String getReason() { return reason; }
-  public String getCreatedBy() { return createdBy; }
-  public Date getCreatedDate() { return createdDate; }
-  public String getLastModifiedBy() { return lastModifiedBy; }
-  public Date getLastModifiedDate() { return lastModifiedDate; }
-}
+  private checkAlreadyUnsubscribed(): void {
+    this.pageLoading = true;
+    this.isError = false;
+    this.errorMsg = '';
 
-package com.bnpparibas.gmrc.evolution.interest_manager_service.unsubscribe;
+    this.contentUnsubscribeService.checkAlreadyUnsubscribed(this.contactId, this.source)
+      .subscribe(
+        (res: any) => {
+          // You choose response format; support both:
+          // { alreadyUnsubscribed: true } OR { status: 'ALREADY_UNSUBSCRIBED' }
+          const already =
+            (res && res.alreadyUnsubscribed === true) ||
+            (res && res.status === 'ALREADY_UNSUBSCRIBED');
 
-import org.springframework.data.jpa.repository.JpaRepository;
-
-import java.util.List;
-
-public interface UnsubscribeFeedbackRepository extends JpaRepository<UnsubscribeFeedback, String> {
-  List<UnsubscribeFeedback> findByEmailOrderByCreatedDateDesc(String email);
-  List<UnsubscribeFeedback> findByContactIdOrderByCreatedDateDesc(String contactId);
-}
-
-
-
-package com.bnpparibas.gmrc.evolution.interest_manager_service.unsubscribe;
-
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
-
-import java.util.List;
-
-@Service
-public class UnsubscribeFeedbackService {
-
-  private final UnsubscribeFeedbackRepository repo;
-
-  public UnsubscribeFeedbackService(UnsubscribeFeedbackRepository repo) {
-    this.repo = repo;
+          this.alreadyUnsubscribed = !!already;
+          this.pageLoading = false;
+        },
+        () => {
+          // If check endpoint fails, you can still allow form (or block).
+          // I'd allow form but show a warning.
+          this.pageLoading = false;
+          this.alreadyUnsubscribed = false;
+        }
+      );
   }
 
-  @Transactional
-  public UnsubscribeFeedback create(UnsubscribeFeedbackRequest req) {
-    if (req.getEmail() == null || req.getEmail().trim().isEmpty()) {
-      throw new IllegalArgumentException("email is required");
-    }
-    if (req.getSource() == null || req.getSource().trim().isEmpty()) {
-      throw new IllegalArgumentException("source is required");
+  public getSourceLabel(): string {
+    if (this.source === 'BULK') return 'Bulk distribution email';
+    if (this.source === 'MMC') return 'MMC email';
+    return '';
+  }
+
+  public submitUnsubscribe(emailTxt: string, reasonTxt: string): void {
+    // reset messages
+    this.isError = false;
+    this.errorMsg = '';
+
+    const email = (emailTxt || '').trim();
+    const reason = (reasonTxt || '').trim();
+
+    if (!email || !this.isValidEmail(email)) {
+      this.isError = true;
+      this.errorMsg = 'Please enter a valid email address.';
+      return;
     }
 
-    String source = req.getSource().trim().toUpperCase();
-    if (!source.equals("BULK") && !source.equals("MMC")) {
-      throw new IllegalArgumentException("source must be BULK or MMC");
+    if (!this.contactId || !this.source) {
+      this.isError = true;
+      this.errorMsg = 'Missing contactId/source. Please use the unsubscribe link from the email.';
+      return;
     }
 
-    UnsubscribeFeedback e = new UnsubscribeFeedback();
-    e.setContactId(req.getContactId() != null ? req.getContactId().trim() : null);
-    e.setEmail(req.getEmail().trim());
-    e.setSource(source);
-    e.setReason(req.getReason() != null ? req.getReason().trim() : null);
+    this.isSubmitLoading = true;
 
-    return repo.save(e);
+    // 1) Unsubscribe (remove channel etc)
+    this.contentUnsubscribeService.unsubscribe(this.contactId, this.source, email)
+      .subscribe(
+        (unsubRes: any) => {
+          // If backend says already unsubscribed, show already message
+          const already =
+            (unsubRes && unsubRes.status === 'ALREADY_UNSUBSCRIBED') ||
+            (unsubRes && unsubRes.alreadyUnsubscribed === true);
+
+          if (already) {
+            this.isSubmitLoading = false;
+            this.alreadyUnsubscribed = true;
+            return;
+          }
+
+          // 2) Save feedback (audit)
+          this.contentUnsubscribeService.saveFeedback({
+            contactId: this.contactId,
+            email,
+            source: this.source,
+            reason
+          }).subscribe(
+            () => {
+              this.isSubmitLoading = false;
+              this.isSaved = true;
+            },
+            () => {
+              // even if feedback save fails, the unsubscribe is done -> show success but warn
+              this.isSubmitLoading = false;
+              this.isSaved = true;
+            }
+          );
+        },
+        () => {
+          this.isSubmitLoading = false;
+          this.isError = true;
+          this.errorMsg = 'Something went wrong. Please try again later.';
+        }
+      );
   }
 
-  @Transactional(readOnly = true)
-  public List<UnsubscribeFeedback> getByEmail(String email) {
-    if (email == null || email.trim().isEmpty()) {
-      throw new IllegalArgumentException("email is required");
-    }
-    return repo.findByEmailOrderByCreatedDateDesc(email.trim());
-  }
-
-  @Transactional(readOnly = true)
-  public List<UnsubscribeFeedback> getByContactId(String contactId) {
-    if (contactId == null || contactId.trim().isEmpty()) {
-      throw new IllegalArgumentException("contactId is required");
-    }
-    return repo.findByContactIdOrderByCreatedDateDesc(contactId.trim());
-  }
-}
-
-package com.bnpparibas.gmrc.evolution.interest_manager_service.unsubscribe;
-
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
-
-import java.util.List;
-
-@RestController
-@RequestMapping("/api/unsubscribe/feedback")
-public class UnsubscribeFeedbackController {
-
-  private final UnsubscribeFeedbackService service;
-
-  public UnsubscribeFeedbackController(UnsubscribeFeedbackService service) {
-    this.service = service;
-  }
-
-  @PostMapping
-  public ResponseEntity<UnsubscribeFeedbackResponse> create(@RequestBody UnsubscribeFeedbackRequest req) {
-    UnsubscribeFeedback saved = service.create(req);
-    return ResponseEntity.ok(new UnsubscribeFeedbackResponse(saved));
-  }
-
-  // GET /api/unsubscribe/feedback?email=a@b.com
-  @GetMapping(params = "email")
-  public ResponseEntity<List<UnsubscribeFeedbackResponse>> getByEmail(@RequestParam("email") String email) {
-    List<UnsubscribeFeedbackResponse> out = service.getByEmail(email)
-        .stream().map(UnsubscribeFeedbackResponse::new).toList();
-    return ResponseEntity.ok(out);
-  }
-
-  // GET /api/unsubscribe/feedback?contactId=ECO-UPE4E
-  @GetMapping(params = "contactId")
-  public ResponseEntity<List<UnsubscribeFeedbackResponse>> getByContactId(@RequestParam("contactId") String contactId) {
-    List<UnsubscribeFeedbackResponse> out = service.getByContactId(contactId)
-        .stream().map(UnsubscribeFeedbackResponse::new).toList();
-    return ResponseEntity.ok(out);
+  private isValidEmail(value: string): boolean {
+    const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return re.test((value || '').trim());
   }
 }
 
 
 
+<div class="content-unsubscribe">
+  <div class="unsubscribe-page">
 
+    <!-- LOADING -->
+    <div *ngIf="pageLoading" class="loader c-align"></div>
 
+    <!-- ERROR -->
+    <div *ngIf="!pageLoading && isError" class="error-msg c-align">{{ errorMsg }}</div>
 
+    <!-- ALREADY UNSUBSCRIBED -->
+    <div *ngIf="!pageLoading && !isError && alreadyUnsubscribed" class="thanks-section">
+      <div class="thanks-txt">You have already unsubscribed.</div>
+      <div class="sub-txt" *ngIf="getSourceLabel()">Request from: <b>{{ getSourceLabel() }}</b></div>
+    </div>
 
+    <!-- SUCCESS -->
+    <div *ngIf="!pageLoading && !isError && isSaved" class="thanks-section">
+      <div class="thanks-txt">You have successfully unsubscribed.</div>
+      <div class="sub-txt" *ngIf="getSourceLabel()">Request from: <b>{{ getSourceLabel() }}</b></div>
+    </div>
+
+    <!-- FORM -->
+    <div *ngIf="!pageLoading && !isError && !alreadyUnsubscribed && !isSaved" class="content-unsubscribe-container">
+
+      <div class="header-txt">Unsubscribe</div>
+
+      <div class="source-txt" *ngIf="getSourceLabel()">
+        Request from: <b>{{ getSourceLabel() }}</b>
+      </div>
+
+      <div class="field-section">
+        <div class="field-label">Email Address *</div>
+        <!-- Use template ref like feedback page -->
+        <input
+          #emailTxt
+          class="txt-field"
+          type="text"
+          [value]="email"
+          readonly />
+      </div>
+
+      <div class="field-section">
+        <div class="field-label">Reason for Unsubscribe (optional)</div>
+        <textarea #reasonTxt class="txt-area"></textarea>
+      </div>
+
+      <!-- show error close to form -->
+      <div *ngIf="isError" class="error-msg">{{ errorMsg }}</div>
+
+      <div class="btn-section">
+        <button
+          class="submit-btn"
+          [disabled]="isSubmitLoading"
+          (click)="submitUnsubscribe(emailTxt.value, reasonTxt.value)">
+          Submit
+        </button>
+
+        <div *ngIf="isSubmitLoading" class="loader c-align"></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+.content-unsubscribe {
+  .unsubscribe-page {
+    width: 100%;
+    padding: 30px 0;
+  }
+
+  .content-unsubscribe-container {
+    width: 700px;
+    max-width: calc(100% - 40px);
+    margin: 0 auto;
+  }
+
+  .header-txt {
+    font-size: 28px;
+    text-align: center;
+    margin-bottom: 18px;
+    font-weight: 600;
+  }
+
+  .source-txt {
+    text-align: center;
+    margin-bottom: 20px;
+  }
+
+  .field-section {
+    margin-bottom: 16px;
+  }
+
+  .field-label {
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+
+  .txt-field {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+  }
+
+  .txt-area {
+    width: 100%;
+    min-height: 120px;
+    padding: 10px 12px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+  }
+
+  .btn-section {
+    margin-top: 18px;
+  }
+
+  .submit-btn {
+    display: inline-block;
+    padding: 10px 18px;
+    border-radius: 4px;
+    border: 1px solid #2a2a2a;
+    background: #2a2a2a;
+    color: #fff;
+    cursor: pointer;
+  }
+
+  .submit-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .error-msg {
+    color: #b00020;
+    margin: 10px 0;
+  }
+
+  .thanks-section {
+    width: 700px;
+    max-width: calc(100% - 40px);
+    margin: 0 auto;
+    text-align: center;
+    padding: 30px 0;
+  }
+
+  .thanks-txt {
+    font-size: 20px;
+    font-weight: 600;
+    margin-bottom: 8px;
+  }
+
+  .sub-txt {
+    opacity: 0.85;
+  }
+
+  .c-align {
+    margin: 10px auto;
+  }
+
+  .loader {
+    width: 26px;
+    height: 26px;
+    border: 3px solid #ccc;
+    border-top-color: #2a2a2a;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+}
+
+import { Injectable } from '@angular/core';
+import { HttpClient, HttpParams } from '@angular/common/http';
+import { Observable } from 'rxjs';
+
+@Injectable()
+export class ContentUnsubscribeService {
+
+  constructor(private readonly http: HttpClient) {}
+
+  // GET /api/unsubscribe/check?contactId=...&source=...
+  public checkAlreadyUnsubscribed(contactId: string, source: string): Observable<any> {
+    const params = new HttpParams()
+      .set('contactId', contactId)
+      .set('source', source);
+
+    return this.http.get('/api/unsubscribe/check', { params });
+  }
+
+  // POST /api/unsubscribe
+  // body: { contactId, source, email }
+  public unsubscribe(contactId: string, source: string, email: string): Observable<any> {
+    return this.http.post('/api/unsubscribe', { contactId, source, email });
+  }
+
+  // POST /api/unsubscribe/feedback
+  public saveFeedback(body: { contactId: string; email: string; source: string; reason?: string }): Observable<any> {
+    return this.http.post('/api/unsubscribe/feedback', body);
+  }
+}
 
