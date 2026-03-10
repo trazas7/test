@@ -1,0 +1,45 @@
+<button id="translate-btn">🌐 TRANSLATE</button>
+<select id="translate-lang" style="width:100%; margin: -4px 0 8px; padding:8px; border-radius:8px; border:1px solid #1AA48C; font-size:13px; background:white;">
+  <option value="English">🇬🇧 English</option>
+  <option value="French">🇫🇷 French</option>
+  <option value="Spanish">🇪🇸 Spanish</option>
+  <option value="German">🇩🇪 German</option>
+  <option value="Italian">🇮🇹 Italian</option>
+  <option value="Portuguese">🇵🇹 Portuguese</option>
+  <option value="Arabic">🇸🇦 Arabic</option>
+  <option value="Chinese">🇨🇳 Chinese</option>
+  <option value="Japanese">🇯🇵 Japanese</option>
+</select>
+
+
+translate: {
+  heading: "🌐 Translation",
+  task: "TRANSLATE",
+  system: `You are a professional translator.
+Translate the email below to {LANG}.
+Keep the tone and meaning faithful to the original.
+If the email is already in {LANG}, say so and provide a brief summary instead.`,
+},
+
+
+
+async function runTask(taskKey: string) {
+  const config = PROMPTS[taskKey];
+  const emailBody = await safeGetEmailBody();
+  if (!emailBody) return;
+
+  let system = config.system;
+
+  // Inject selected language for translate
+  if (taskKey === "translate") {
+    const langSelect = document.getElementById("translate-lang") as HTMLSelectElement;
+    const lang = langSelect?.value ?? "English";
+    system = system.replaceAll("{LANG}", lang);
+  }
+
+  const prompt = `${system}\n\n---\nEMAIL:\n${emailBody}`;
+  await submitToLLM(prompt, config.task, config.heading);
+}
+
+
+
