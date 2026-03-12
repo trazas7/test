@@ -1,78 +1,17 @@
-<div id="main-screen" style="display: none;">
-  <h1 class="scraibe-title">Scr<span style="color: teal;">AI</span>bE</h1>
-  <hr>
-  <span class="tasks-launcher-title">Email Assistant</span>
+if (!response.ok) {
+  const errText = await response.text();
+  console.error("LLM API error:", errText);
 
-  <!-- Global language selector -->
-  <label style="font-size:12px; color:#555; margin-bottom:2px; display:block;">Response language:</label>
-  <select id="preferred-lang" style="width:100%; margin-bottom:12px; padding:8px; border-radius:8px; border:1px solid #1AA48C; font-size:13px; background:white;">
-    <option value="English">🇬🇧 English</option>
-    <option value="French">🇫🇷 French</option>
-    <option value="Spanish">🇪🇸 Spanish</option>
-    <option value="German">🇩🇪 German</option>
-    <option value="Italian">🇮🇹 Italian</option>
-    <option value="Portuguese">🇵🇹 Portuguese</option>
-    <option value="Arabic">🇸🇦 Arabic</option>
-    <option value="Chinese">🇨🇳 Chinese</option>
-    <option value="Japanese">🇯🇵 Japanese</option>
-  </select>
+  // Detect timeout / file too large case
+  if (response.status === 504 || errText.includes("Gateway Timeout")) {
+    showMessage(
+      "File too large – select a shorter excerpt to continue.",
+      "error"
+    );
+    throw new Error("File too large");
+  }
 
-  <button id="summarize-btn">✉️ SUMMARIZE EMAIL</button>
-  <button id="translate-btn">🌐 TRANSLATE</button>
-  <button id="diy-btn">✏️ DIY (CUSTOM PROMPT)</button>
-  <button class="disabled">💡 SUGGEST WORDING</button>
-  <button class="disabled">🔍 REVIEW SYNTAX</button>
-</div>
-
-
-function getPreferredLang(): string {
-  const el = document.getElementById("preferred-lang") as HTMLSelectElement;
-  return el?.value ?? "English";
+  // default error
+  showMessage("LLM call failed", "error");
+  throw new Error("LLM call failed");
 }
-
-
-const PROMPTS: Record<string, { heading: string; system: string; task: string }> = {
-  summarize: {
-    heading: "✉️ Email Summary",
-    task: "SUMMARIZE_EMAIL",
-    system: `You are an expert email analyst at a financial institution.
-Summarize the email below concisely and professionally.
-Highlight: sender intent, key information, any action items or deadlines.
-Max 5 bullet points. If the email is short, 2 sentences is enough.
-Always respond in {LANG}.`,
-  },
-  translate: {
-    heading: "🌐 Translation",
-    task: "TRANSLATE",
-    system: `You are a professional translator.
-Translate the email below to {LANG}.
-Keep the tone and meaning faithful to the original.
-If the email is already in {LANG}, say so and provide a brief summary instead.`,
-  },
-};
-
-
-async function runTask(taskKey: string) {
-  const config = PROMPTS[taskKey];
-  const emailBody = await safeGetEmailBody();
-  if (!emailBody) return;
-
-  const lang = getPreferredLang();
-  const system = config.system.replaceAll("{LANG}", lang);
-  const prompt = `${system}\n\n---\nEMAIL:\n${emailBody}`;
-  await submitToLLM(prompt, config.task, config.heading);
-}
-
-async function runDIY(userPrompt: string) {
-  const emailBody = await safeGetEmailBody();
-  if (!emailBody) return;
-
-  const lang = getPreferredLang();
-  const prompt = `${userPrompt}\n\nAlways respond in ${lang}.\n\n---\nEMAIL CONTENT:\n${emailBody}`;
-  await submitToLLM(prompt, "DIY", "✏️ Custom Result");
-}
-
-
-
-
-
