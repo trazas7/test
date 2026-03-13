@@ -1,2 +1,25 @@
-npm install -g @apidevtools/swagger-cli
-swagger-cli validate yourfile.yaml
+AlixResponse:
+  type: object
+  description: Response returned by the Alix LLM assistant.
+  properties:
+    message:
+      type: string
+    predicateAlerts:
+      type: integer
+      format: int32
+    regions:
+      type: array
+      items:
+        type: string
+    themes:
+      type: array
+      items:
+        type: object
+        additionalProperties:
+          type: array
+          items:
+            type: string
+    responseWarnings:
+      type: array
+      items:
+        type: string
