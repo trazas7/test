@@ -1,17 +1,2 @@
-if (!response.ok) {
-  const errText = await response.text();
-  console.error("LLM API error:", errText);
-
-  // Detect timeout / file too large case
-  if (response.status === 504 || errText.includes("Gateway Timeout")) {
-    showMessage(
-      "File too large – select a shorter excerpt to continue.",
-      "error"
-    );
-    throw new Error("File too large");
-  }
-
-  // default error
-  showMessage("LLM call failed", "error");
-  throw new Error("LLM call failed");
-}
+npm install -g @apidevtools/swagger-cli
+swagger-cli validate yourfile.yaml
