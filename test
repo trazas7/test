@@ -1,0 +1,59 @@
+# Task: Secure target-service with the user token, plus an internal token for async calls
+
+Keep this minimal and do only what is described below. Do not change DTOs,
+message formats or any unrelated code. Do not add features I didn't ask for.
+
+## Context
+- Spring Boot microservices.
+- `caller-service` is already secured as an OAuth2 resource server, using the
+  IdP JWT that the frontend sends.
+- `caller-service` calls `target-service` in two situations:
+  - during user requests, when the user token is available;
+  - from message-queue listeners, when there is no user and no token.
+- The IdP has no service accounts, so for async calls `caller-service` must
+  create its own token.
+- `target-service` is not secured yet.
+
+## What I want
+
+1. In caller-service, add one interceptor on the existing client that calls
+   target-service:
+   - If the SecurityContext holds a user JWT, forward it as the Bearer token.
+   - Otherwise, create a JWT signed with caller-service's private key and send
+     it as the Bearer token. Token details:
+     - algorithm RS256
+     - iss = "caller-service"
+     - aud = "target-service"
+     - expires after 5 minutes
+
+2. In target-service, accept both kinds of token:
+   - IdP tokens: validate them exactly as caller-service does
+     (same issuer-uri config).
+   - Internal tokens: validate them with caller-service's public key
+     (signature, issuer, audience, expiry).
+   - Use JwtIssuerAuthenticationManagerResolver to pick the right validation
+     from the token's issuer.
+   - Any other issuer returns 401.
+   - Follow the same SecurityConfig style as caller-service.
+
+3. Keys:
+   - The private key lives only in caller-service; the public key lives only
+     in target-service.
+   - Load both from a file path set in application properties. The files come
+     from a Kubernetes Secret, and I'll handle the deployment side.
+
+## Tests (essentials only)
+target-service:
+- no token returns 401
+- a valid internal token is accepted
+- a valid user token (mocked decoder) is accepted
+- a wrong signature returns 401
+- an expired token returns 401
+
+caller-service:
+- the interceptor forwards the user token when one is present
+- it creates an internal token when there is none
+
+## Process
+- Before coding, list the files you'll create or modify. It should be a handful.
+- At the end, give me the openssl commands to generate the key pair.
